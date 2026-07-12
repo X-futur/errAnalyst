@@ -2,6 +2,7 @@ import * as https from 'https';
 import * as http from 'http';
 import { URL } from 'url';
 import { LlmRequest, LlmResponse, LlmProvider } from './types';
+import * as fs from 'fs';
 import { LlmProviderConfig } from '../config';
 
 export class OpenAICompatibleProvider implements LlmProvider {
@@ -90,13 +91,15 @@ Return ONLY valid JSON (no markdown code block markers):
   "keywords": [{"cn": "Chinese term", "en": "English term"}],
   "analysis": "Root cause analysis in Chinese",
   "fixSuggestion": "Fix suggestion in Chinese",
-  "fixCode": "The fix code (the corrected Python code snippet) - REQUIRED, provide actual Python code that fixes the error. If the fix involves multiple lines, include all of them."
+  "fixCode": "The fix code (the corrected Python code snippet) - REQUIRED, provide actual Python code that fixes the error. If the fix involves multiple lines, include all of them.",
+  "fixFile": "The EXACT full file path that needs to be fixed - use the absolute path from the error traceback file context below"
 }
 
 Rules:
 1. Use {{keyword}} in translation for highlightable terms
 2. Each {{keyword}} must have a matching entry in keywords array
-3. Provide detailed, accurate analysis`;
+3. Provide detailed, accurate analysis
+4. fixFile must be the exact file path (absolute path) of the file that needs to be modified`;
 
   let contextCode = '';
   for (const frame of result.stackFrames) {
@@ -107,13 +110,37 @@ Rules:
     }
   }
 
+  // Read source code context from traceback files
+  let sourceContext = '';
+  const seen = new Set<string>();
+  for (const frame of result.stackFrames) {
+    if (!frame.file || seen.has(frame.file)) continue;
+    seen.add(frame.file);
+    try {
+      const fileContent = fs.readFileSync(frame.file, 'utf-8');
+      const fileLines = fileContent.split('\n');
+      const start = Math.max(0, frame.line - 15);
+      const end = Math.min(fileLines.length, frame.line + 5);
+      sourceContext += `=== ${frame.file} (lines ${start + 1}-${end}) ===\n`;
+      for (let i = start; i < end; i++) {
+        const marker = (i === frame.line - 1) ? '>>>' : '   ';
+        sourceContext += marker + ' ' + (i + 1) + ': ' + fileLines[i] + '\n';
+      }
+      sourceContext += '\n';
+    } catch {
+      // File not accessible, skip
+    }
+  }
+
   const userPrompt = `Error:
 ${result.fullTraceback}
 
 Stack context:
 ${contextCode || '(no context code)'}
 
-Analyze this error and return JSON.`;
+${sourceContext ? 'Source code context (>>> marks the error line):\n' + sourceContext : ''}
+
+Analyze this error and return JSON with the EXACT fixFile path.`;
 
   return { systemPrompt, userPrompt };
 }
@@ -126,6 +153,7 @@ export function parseAiResponse(content: string): {
   analysis: string;
   fixSuggestion: string;
   fixCode: string;
+  fixFile: string;
 } | null {
   try {
     const jsonMatch = content.match(/\{[\s\S]*\}/);
@@ -138,7 +166,8 @@ export function parseAiResponse(content: string): {
       keywords: data.keywords || [],
       analysis: data.analysis || '',
       fixSuggestion: data.fixSuggestion || '',
-      fixCode: typeof data.fixCode === 'string' ? data.fixCode : ''
+      fixCode: typeof data.fixCode === 'string' ? data.fixCode : '',
+      fixFile: typeof data.fixFile === 'string' ? data.fixFile : ''
     };
   } catch (e) {
     console.error('ErrAnalyst: Failed to parse AI response', e);

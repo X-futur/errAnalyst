@@ -21,6 +21,7 @@ export interface ErrorAnalysisResult {
   analysis?: string;
   fixSuggestion?: string;
   fixCode?: string;
+  fixFile?: string;
   timestamp?: number;
 }
 

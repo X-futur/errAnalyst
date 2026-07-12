@@ -36,16 +36,6 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.AnalysisWebview = void 0;
 const vscode = __importStar(require("vscode"));
 class AnalysisWebview {
-  private handleWebviewMessage(msg) {
-    switch (msg.type) {
-      case 'highlightEditor': this.highlightInEditor(msg.term); break;
-      case 'applyFix':
-        vscode.commands.executeCommand('errAnalyst.showFixDiff').then(undefined, err => {
-          console.error('ErrAnalyst: Fix command failed:', err);
-        });
-        break;
-    }
-  }
     constructor() {
         this.panel = null;
         this.currentError = null;
@@ -75,6 +65,18 @@ class AnalysisWebview {
         if (this.panel)
             this.panel.reveal(vscode.ViewColumn.Beside, true);
     }
+    handleWebviewMessage(msg) {
+        switch (msg.type) {
+            case 'highlightEditor':
+                this.highlightInEditor(msg.term);
+                break;
+            case 'applyFix':
+                vscode.commands.executeCommand('errAnalyst.showFixDiff').then(undefined, err => {
+                    console.error('ErrAnalyst: Fix command failed:', err);
+                });
+                break;
+        }
+    }
     updateContent() {
         if (!this.panel || !this.currentError)
             return;
@@ -82,46 +84,38 @@ class AnalysisWebview {
         const aiData = this.currentAiData;
         let stackHtml = '';
         for (const frame of error.stackFrames) {
-            const codeLine = frame.codeLine ? `<div class="code-line">${this.esc(frame.codeLine)}</div>` : '';
-            stackHtml += `<div class="stack-frame"><span class="frame-file">${this.esc(frame.file)}</span>:<span class="frame-line">${frame.line}</span>, in <span class="frame-func">${this.esc(frame.function)}</span>${codeLine}</div>`;
+            const codeLine = frame.codeLine ? '<div class="code-line">' + this.esc(frame.codeLine) + '</div>' : '';
+            stackHtml += '<div class="stack-frame"><span class="frame-file">' + this.esc(frame.file) + '</span>:<span class="frame-line">' + frame.line + '</span>, in <span class="frame-func">' + this.esc(frame.function) + '</span>' + codeLine + '</div>';
         }
         let analysisHtml = '';
         if (aiData) {
-            let originalHtml = `<div class="error-type">${this.esc(error.errorType)}</div><div class="error-msg">`;
-            originalHtml += this.buildKeywordHtml(error.errorMessage, aiData.keywords);
-            originalHtml += '</div>';
             let transHtml = aiData.translation;
             for (const kw of aiData.keywords) {
                 const escaped = this.esc(kw.cn);
-                transHtml = transHtml.replace(new RegExp('\\{\\{' + this.escRegex(kw.en) + '\\}\\}', 'g'), `<span class="hl-keyword" data-en="${this.esc(kw.en)}" data-cn="${escaped}">${escaped}</span>`);
+                transHtml = transHtml.replace(new RegExp('\\{\\{' + this.escRegex(kw.en) + '\\}\\}', 'g'), '<span class="hl-keyword" data-en="' + this.esc(kw.en) + '" data-cn="' + escaped + '">' + escaped + '</span>');
             }
             let kwPills = '';
             for (const kw of aiData.keywords) {
-                kwPills += `<span class="keyword-badge" data-en="${this.esc(kw.en)}" data-cn="${this.esc(kw.cn)}"><span class="kw-en">${this.esc(kw.en)}</span> ↔ <span class="kw-cn">${this.esc(kw.cn)}</span></span>`;
+                kwPills += '<span class="keyword-badge" data-en="' + this.esc(kw.en) + '" data-cn="' + this.esc(kw.cn) + '"><span class="kw-en">' + this.esc(kw.en) + '</span> \u2194 <span class="kw-cn">' + this.esc(kw.cn) + '</span></span>';
             }
-            analysisHtml = `
-        <div class="analysis-content">
-          <div class="error-pair">
-            <div class="error-original"><h4>原始报错</h4><pre class="error-text">${originalHtml}</pre></div>
-            <div class="error-translated"><h4>中文翻译</h4><div class="translated-text">${transHtml}</div></div>
-          </div>
-          ${kwPills ? '<div class="keyword-pills">' + kwPills + '</div>' : ''}
-          <div class="section-card"><h4>错误分析</h4><p>${this.esc(aiData.analysis)}</p></div>
-          <div class="section-card fix-card"><h4>修复建议</h4><p>${this.esc(aiData.fixSuggestion)}</p></div>
-          <div class="action-buttons"><button class="btn btn-primary" onclick="applyFix()">🔧 应用修复</button></div>
-        </div>`;
+            let errorTypeHtml = '<div class="error-type">' + this.esc(error.errorType) + '</div>';
+            let errorMsgHtml = this.esc(error.errorMessage);
+            for (const kw of aiData.keywords) {
+                errorMsgHtml = errorMsgHtml.replace(new RegExp(this.escRegex(kw.en), 'gi'), (match) => '<span class="hl-keyword" data-en="' + this.esc(kw.en) + '" data-cn="' + this.esc(kw.cn) + '">' + this.esc(match) + '</span>');
+            }
+            analysisHtml = '<div class="analysis-content">'
+                + '<div class="error-pair">'
+                + '<div class="error-original"><h4>原始报错</h4><pre class="error-text">' + errorTypeHtml + '<div class="error-msg">' + errorMsgHtml + '</div></pre></div>'
+                + '<div class="error-translated"><h4>中文翻译</h4><div class="translated-text">' + transHtml + '</div></div></div>'
+                + (kwPills ? '<div class="keyword-pills">' + kwPills + '</div>' : '')
+                + '<div class="section-card"><h4>错误分析</h4><p>' + this.esc(aiData.analysis) + '</p></div>'
+                + '<div class="section-card fix-card"><h4>修复建议</h4><p>' + this.esc(aiData.fixSuggestion) + '</p></div>'
+                + '<div class="action-buttons"><button class="btn btn-primary" onclick="applyFix()">\uD83D\uDD27 应用修复</button></div></div>';
         }
         else {
             analysisHtml = '<div class="analysis-loading"><div class="spinner"></div><p>正在调用 AI 分析...</p></div>';
         }
         this.panel.webview.html = this.getHtmlTemplate(stackHtml, analysisHtml);
-    }
-    buildKeywordHtml(text, keywords) {
-        let result = this.esc(text);
-        for (const kw of keywords) {
-            result = result.replace(new RegExp(this.escRegex(kw.en), 'gi'), (match) => `<span class="hl-keyword" data-en="${this.esc(kw.en)}" data-cn="${this.esc(kw.cn)}">${this.esc(match)}</span>`);
-        }
-        return result;
     }
     highlightInEditor(term) {
         this.clearHighlight();
@@ -195,49 +189,21 @@ h3{margin-bottom:8px;font-size:15px;}h4{font-size:12px;text-transform:uppercase;
 </style>
 </head>
 <body>
-<h3>\u26a0\ufe0f ${this.esc(this.currentError?.errorType || 'Error')}</h3>
-<div class="stack-section"><h4>\u8c03\u7528\u6808</h4>${stackHtml}</div>
-${analysisHtml}
+<h3>\u26a0\ufe0f ` + this.esc(this.currentError?.errorType || 'Error') + `</h3>
+<div class="stack-section"><h4>\u8c03\u7528\u6808</h4>` + stackHtml + `</div>
+` + analysisHtml + `
 <script>
-(function(){var vscode=acquireVsCodeApi();
-var vsApi=vscode;
-function highlightKeywords(term){document.querySelectorAll('.hl-keyword').forEach(function(el){el.classList.add('active');});}
-function unhighlightKeywords(){document.querySelectorAll('.hl-keyword').forEach(function(el){el.classList.remove('active');});}
-document.addEventListener('mouseover',function(e){
-var t=e.target;
-if(t&&t.classList&&t.classList.contains('hl-keyword')){var kw=t.getAttribute('data-en')||t.textContent;
-highlightKeywords(kw);
-vsApi.postMessage({type:'highlightEditor',term:kw});}});
-document.addEventListener('mouseout',function(e){
-var t=e.target;
-if(t&&t.classList&&t.classList.contains('hl-keyword')){unhighlightKeywords();}});
-function attachBadgeListeners(){document.querySelectorAll('.keyword-badge').forEach(function(b){
-b.addEventListener('mouseover',function(){var en=this.getAttribute('data-en');
-highlightKeywords(en);
-vsApi.postMessage({type:'highlightEditor',term:en});});
-b.addEventListener('mouseout',function(){unhighlightKeywords();});});}
-attachBadgeListeners();
-var observer=new MutationObserver(function(){attachBadgeListeners();});
-observer.observe(document.body,{childList:true,subtree:true});
+(function(){var vscode=acquireVsCodeApi();var vsApi=vscode;
+function hk(t){document.querySelectorAll('.hl-keyword').forEach(function(e){e.classList.add('active');});}
+function uk(){document.querySelectorAll('.hl-keyword').forEach(function(e){e.classList.remove('active');});}
+document.addEventListener('mouseover',function(e){var t=e.target;if(t&&t.classList&&t.classList.contains('hl-keyword')){var kw=t.getAttribute('data-en')||t.textContent;hk(kw);vsApi.postMessage({type:'highlightEditor',term:kw});}});
+document.addEventListener('mouseout',function(e){var t=e.target;if(t&&t.classList&&t.classList.contains('hl-keyword')){uk();}});
+function ab(){document.querySelectorAll('.keyword-badge').forEach(function(b){b.addEventListener('mouseover',function(){var en=this.getAttribute('data-en');hk(en);vsApi.postMessage({type:'highlightEditor',term:en});});b.addEventListener('mouseout',function(){uk();});});}
+ab();var ob=new MutationObserver(function(){ab();});ob.observe(document.body,{childList:true,subtree:true});
 window.applyFix=function(){vsApi.postMessage({type:'applyFix'});};})();
 </script>
 </body>
 </html>`;
-    }
-    handleWebviewMessage(msg) {
-        switch (msg.type) {
-            case 'highlightEditor':
-                this.highlightInEditor(msg.term);
-                break;
-            case 'applyFix':
-                try {
-                    vscode.commands.executeCommand('errAnalyst.showFixDiff');
-                }
-                catch (e) {
-                    console.error('ErrAnalyst: Failed to execute fix command', e);
-                }
-                break;
-        }
     }
 }
 exports.AnalysisWebview = AnalysisWebview;

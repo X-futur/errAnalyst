@@ -7,6 +7,7 @@ import { ErrorLinkProvider } from './errorLinkProvider';
 import { ErrorHoverProvider } from './hoverProvider';
 import { AnalysisWebview } from './analysisWebview';
 import { FixProvider } from './fixProvider';
+import { ErrorHistoryViewProvider } from './errorHistoryView';
 import { createProvider, buildAnalysisPrompts, parseAiResponse } from './llmProvider';
 import type { ErrorAnalysisResult } from './config';
 
@@ -16,6 +17,7 @@ let hoverProvider: ErrorHoverProvider;
 let analysisWebview: AnalysisWebview;
 let fixProvider: FixProvider;
 let errorMemory: ErrorMemory;
+let errorHistoryViewProvider: ErrorHistoryViewProvider;
 let lastError: ErrorAnalysisResult | null = null;
 
 export function activate(context: vscode.ExtensionContext) {
@@ -23,6 +25,11 @@ export function activate(context: vscode.ExtensionContext) {
 
   errorMemory = new ErrorMemory();
   errorMemory.init();
+
+  errorHistoryViewProvider = new ErrorHistoryViewProvider(context.extensionUri, errorMemory);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(ErrorHistoryViewProvider.viewType, errorHistoryViewProvider)
+  );
 
   analysisWebview = new AnalysisWebview();
   fixProvider = new FixProvider();
@@ -46,6 +53,7 @@ export function activate(context: vscode.ExtensionContext) {
     if (Config.getInstance().getAutoAnalyze()) {
       await autoAnalyze(result);
     }
+    errorHistoryViewProvider.refresh();
   });
   terminalWatcher.activate();
 
@@ -68,6 +76,7 @@ export function activate(context: vscode.ExtensionContext) {
         lastError = result;
         analysisWebview.show(result);
         await autoAnalyze(result);
+        errorHistoryViewProvider.refresh();
       }
     })
   );
@@ -165,6 +174,7 @@ async function autoAnalyze(result: ErrorAnalysisResult): Promise<void> {
   result.analysis = parsed.analysis;
   result.fixSuggestion = parsed.fixSuggestion;
   result.fixCode = parsed.fixCode;
+  result.fixFile = parsed.fixFile;
 
   analysisWebview.show(result, {
     translation: parsed.translation,
@@ -182,6 +192,7 @@ async function autoAnalyze(result: ErrorAnalysisResult): Promise<void> {
   });
 
   fixProvider.prepareFix(result, parsed.fixCode);
+  errorHistoryViewProvider.refresh();
 
   if (config.getEnableCache()) {
     errorMemory.cacheResult(result);
