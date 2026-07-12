@@ -47,7 +47,12 @@ class TerminalWatcher {
         this.onErrorDetected = onErrorDetected;
     }
     activate() {
-        this.disposables.push(vscode.window.onDidStartTerminalShellExecution(async (event) => {
+        this.disposables.push(vscode.window.onDidEndTerminalShellExecution(async (event) => {
+            // Only analyze when command fails (non-zero exit code)
+            const exitCode = event.exitCode;
+            if (exitCode === 0 || exitCode === undefined)
+                return;
+            // Execution ended, read full output
             const execution = event.execution;
             let buffer = '';
             try {
@@ -56,23 +61,22 @@ class TerminalWatcher {
                     if (buffer.length > this.MAX_BUFFER_SIZE) {
                         buffer = buffer.slice(-this.MAX_BUFFER_SIZE);
                     }
-                    const errorIndicators = ['Traceback', 'Error', 'Exception', 'Failed',
-                        'ERR', 'exit code', 'SyntaxError', 'command not found'];
-                    if (errorIndicators.some(p => data.includes(p))) {
-                        this.checkForError(buffer);
-                    }
                 }
             }
             catch (e) {
                 // Stream ended or error reading
+                return;
             }
+            if (!buffer)
+                return;
+            this.checkForError(buffer, exitCode);
         }));
     }
     deactivate() {
         this.disposables.forEach(d => d.dispose());
         this.disposables = [];
     }
-    checkForError(buffer) {
+    checkForError(buffer, exitCode) {
         // Step 1: findError.md pipeline (language-agnostic classification)
         const identification = errorParser_1.ErrorParser.identify(buffer);
         // Step 2: Python-specific traceback parsing (for structured stack frames)
@@ -102,7 +106,7 @@ class TerminalWatcher {
         result.category = identification.category;
         result.actionPlan = identification.actionPlan;
         result.suggestion = identification.suggestion;
-        result.hasExitCode = identification.hasExitCode;
+        result.hasExitCode = exitCode ? exitCode !== 0 : identification.hasExitCode;
         result.firstErrorLine = identification.firstErrorLine;
         this.lastErrorKey = errorKey;
         this.lastErrorTime = now;

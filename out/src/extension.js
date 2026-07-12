@@ -46,6 +46,7 @@ const analysisWebview_1 = require("./analysisWebview");
 const fixProvider_1 = require("./fixProvider");
 const errorHistoryView_1 = require("./errorHistoryView");
 const llmProvider_1 = require("./llmProvider");
+const contextBuilder_1 = require("./contextBuilder");
 let terminalWatcher;
 let linkProvider;
 let hoverProvider;
@@ -124,6 +125,7 @@ function deactivate() {
 }
 async function autoAnalyze(result) {
     const config = config_1.Config.getInstance();
+    const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
     if (config.getEnableCache()) {
         const topFile = result.stackFrames.length > 0
             ? result.stackFrames[result.stackFrames.length - 1].file.split('/').pop() || ''
@@ -150,7 +152,8 @@ async function autoAnalyze(result) {
     const llm = (0, llmProvider_1.createProvider)(provider);
     if (!llm)
         return;
-    const prompts = (0, llmProvider_1.buildAnalysisPrompts)(result);
+    const context = contextBuilder_1.ErrorContextBuilder.buildPreciseContext(result, workspaceFolders);
+    const prompts = (0, llmProvider_1.buildAnalysisPrompts)(result, result.category, context);
     const response = await llm.analyze({
         systemPrompt: prompts.systemPrompt,
         userPrompt: prompts.userPrompt,
@@ -162,9 +165,18 @@ async function autoAnalyze(result) {
     }
     const parsed = (0, llmProvider_1.parseAiResponse)(response.content);
     if (!parsed) {
+        console.log('=== ErrAnalyst: Failed to parse LLM response ===');
+        console.log('Raw content:', response.content.slice(0, 500));
         vscode.window.showErrorMessage('ErrAnalyst: Failed to parse AI response');
         return;
     }
+    console.log('=== ErrAnalyst 解析结果 ===');
+    console.log('analysis:', parsed.analysis?.slice(0, 300));
+    console.log('fixSuggestion:', parsed.fixSuggestion?.slice(0, 200));
+    console.log('fixCode length:', parsed.fixCode?.length || 0);
+    console.log('actions count:', parsed.actions?.length || 0);
+    console.log('keywords count:', parsed.keywords?.length || 0);
+    console.log('=== End ===');
     result.errorType = parsed.errorType || result.errorType;
     result.errorMessage = parsed.errorMessage || result.errorMessage;
     result.translation = parsed.translation;
@@ -175,6 +187,11 @@ async function autoAnalyze(result) {
     result.fixFile = parsed.fixFile;
     result.fixImports = parsed.fixImports;
     result.fixLine = parsed.fixLine;
+    const actions = parsed.actions;
+    fixProvider.prepareFix(result, parsed.fixCode);
+    if (actions && actions.length > 0) {
+        fixProvider.prepareActions(actions);
+    }
     analysisWebview.show(result, {
         translation: parsed.translation,
         keywords: parsed.keywords,
@@ -182,15 +199,23 @@ async function autoAnalyze(result) {
         fixSuggestion: parsed.fixSuggestion,
         fixCode: parsed.fixCode
     });
+    // Pass terminal output and project file context to webview
+    analysisWebview.showContext(result.fullTraceback, context);
+    if (actions && actions.length > 0) {
+        analysisWebview.showActions(actions);
+    }
     hoverProvider.showHover(result, {
         translation: parsed.translation,
         keywords: parsed.keywords,
         analysis: parsed.analysis,
         fixSuggestion: parsed.fixSuggestion
     });
-    fixProvider.prepareFix(result, parsed.fixCode);
     errorHistoryViewProvider.refresh();
     if (config.getEnableCache()) {
+        result.fixCode = parsed.fixCode;
+        result.fixFile = parsed.fixFile;
+        result.fixImports = parsed.fixImports;
+        result.fixLine = parsed.fixLine;
         errorMemory.cacheResult(result);
     }
 }

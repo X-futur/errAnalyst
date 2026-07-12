@@ -1,14 +1,21 @@
 import * as vscode from 'vscode';
 import { ErrorAnalysisResult } from './config';
+import { FixAction, CommandAction, FileEdit } from './llmProvider';
 
 export class FixProvider {
   private currentError: ErrorAnalysisResult | null = null;
   private currentFixCode: string = '';
   private decorationType: vscode.TextEditorDecorationType | null = null;
 
+  private actions: FixAction[] = [];
+
   prepareFix(error: ErrorAnalysisResult, fixCode: string): void {
     this.currentError = error;
     this.currentFixCode = typeof fixCode === 'string' ? fixCode : '';
+  }
+
+  prepareActions(actions: FixAction[]): void {
+    this.actions = actions;
   }
 
   private async resolveFilePath(filePath: string): Promise<vscode.Uri | null> {
@@ -38,23 +45,34 @@ export class FixProvider {
       vscode.window.showWarningMessage('ErrAnalyst: No error data');
       return;
     }
-    if (!this.currentFixCode && (!this.currentError?.fixImports || this.currentError.fixImports.length === 0)) {
-      vscode.window.showInformationMessage('ErrAnalyst: The AI analysis did not produce executable fix code. Please review the fix suggestion shown in the panel.');
+
+    // Priority 1: Use new FixAction system
+    const executableActions = this.actions.filter(
+      a => a.type === 'edit_file' || a.type === 'run_command'
+    );
+    if (executableActions.length > 0) {
+      await this.executeActions(executableActions);
       return;
     }
 
-    // Try to determine the target file - prioritize fixFile from AI
+    // Priority 2: Fall back to legacy fixCode system
+    if (!this.currentFixCode && (!this.currentError?.fixImports || this.currentError.fixImports.length === 0)) {
+      vscode.window.showInformationMessage(
+        'ErrAnalyst: No executable fix available. Please review the fix suggestion in the panel.'
+      );
+      return;
+    }
+
+    // Legacy flow: single file single line fix
     let targetFile = this.currentError.fixFile || this.currentError.filePath;
     let targetLine = this.currentError.fixLine || this.currentError.lineNumber;
 
-    // If still empty, try extracting from stack frames
     if (!targetFile && this.currentError.stackFrames.length > 0) {
       const lastFrame = this.currentError.stackFrames[this.currentError.stackFrames.length - 1];
       targetFile = lastFrame.file;
       targetLine = lastFrame.line;
     }
 
-    // If still no file, let user pick
     if (!targetFile) {
       const folders = vscode.workspace.workspaceFolders || [];
       if (folders.length > 0) {
@@ -77,10 +95,8 @@ export class FixProvider {
       return;
     }
 
-    // Resolve the file URI
     let uri = await this.resolveFilePath(targetFile);
     if (!uri) {
-      // Try searching by basename
       const basename = targetFile.split(/[\\/]/).pop() || targetFile;
       const folders = vscode.workspace.workspaceFolders || [];
       for (const folder of folders) {
@@ -103,21 +119,96 @@ export class FixProvider {
     }
 
     if (!uri) {
-      vscode.window.showErrorMessage('ErrAnalyst: Cannot find file: ' + targetFile + '. Make sure the file exists in your workspace.');
+      vscode.window.showErrorMessage('ErrAnalyst: Cannot find file: ' + targetFile);
       return;
     }
 
     await this.applyFixToFile(uri, targetLine, false);
   }
 
-  private async applyFixToFile(uri: vscode.Uri, targetLine: number, insertAsNew: boolean): Promise<void> {
+  private async executeActions(actions: FixAction[]): Promise<void> {
+    // Show user a summary and let them choose which actions to apply
+    const actionLabels = actions.map((a, i) => {
+      const icon = a.type === 'edit_file' ? '\u270f\ufe0f' : '\u25b6\ufe0f';
+      return icon + ' ' + a.title + ': ' + a.description.slice(0, 60);
+    });
+
+    const pick = await vscode.window.showQuickPick(actionLabels, {
+      placeHolder: 'Select a fix action to apply (×' + actions.length + ' available)',
+      canPickMany: false,
+    });
+    if (!pick) return;
+
+    const idx = actionLabels.indexOf(pick);
+    if (idx < 0) return;
+    const action = actions[idx];
+
+    switch (action.type) {
+      case 'edit_file':
+        await this.executeEditFileAction(action);
+        break;
+      case 'run_command':
+        await this.executeRunCommandAction(action);
+        break;
+      case 'info_only':
+        vscode.window.showInformationMessage('ErrAnalyst: ' + action.description);
+        break;
+    }
+  }
+
+  private async executeEditFileAction(action: FixAction): Promise<void> {
+    const edits = action.edits || [];
+    let applied = 0;
+    const failed: string[] = [];
+
+    for (const edit of edits) {
+      try {
+        const uri = vscode.Uri.file(edit.file);
+        await this.applyFixToFile(uri, edit.startLine, false, edit);
+        applied++;
+      } catch (e) {
+        failed.push(edit.file + ': ' + (e instanceof Error ? e.message : String(e)));
+      }
+    }
+
+    if (failed.length === 0) {
+      vscode.window.showInformationMessage(
+        'ErrAnalyst: ' + action.title + ' \u2714 ' + applied + ' file(s) updated'
+      );
+    } else {
+      vscode.window.showWarningMessage(
+        'ErrAnalyst: ' + applied + ' file(s) updated, ' + failed.length + ' failed: ' + failed.join('; ')
+      );
+    }
+  }
+
+  private async executeRunCommandAction(action: FixAction): Promise<void> {
+    const commands = action.commands || [];
+    for (const cmd of commands) {
+      const confirmMsg = 'ErrAnalyst: ' + cmd.description + '\n\n' + cmd.cmd;
+      const choice = cmd.autoApprove
+        ? '\u25b6 \u6267\u884c'
+        : await vscode.window.showWarningMessage(confirmMsg, { modal: true }, '\u25b6 \u6267\u884c', '\u53d6\u6d88');
+      if (!choice || choice === '\u53d6\u6d88') continue;
+
+      const terminal = vscode.window.createTerminal({
+        name: 'ErrAnalyst Fix',
+        cwd: cmd.cwd || vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath,
+      });
+      terminal.show();
+      terminal.sendText(cmd.cmd);
+    }
+  }
+
+  private async applyFixToFile(uri: vscode.Uri, targetLine: number, insertAsNew: boolean, edit?: FileEdit): Promise<void> {
     try {
       const doc = await vscode.workspace.openTextDocument(uri);
       const editor = await vscode.window.showTextDocument(doc);
       const relPath = vscode.workspace.asRelativePath(uri);
       const fixImports = this.currentError?.fixImports || [];
 
-      const fixLines = this.currentFixCode.split('\n');
+      const fixText = edit ? edit.newText : this.currentFixCode;
+      const fixLines = fixText.split('\n');
       let range: vscode.Range;
       let newText: string;
       let startLine: number;
@@ -131,10 +222,17 @@ export class FixProvider {
         startLine = -1;
       } else {
         const lineIdx = Math.max(0, targetLine - 1);
+        const endIdx = edit ? edit.endLine - 1 : lineIdx;
         const originalLine = doc.lineAt(lineIdx);
         const indent = originalLine.text.match(/^\s*/)?.[0] || '';
         newText = fixLines.map(l => indent + l).join('\n');
-        range = originalLine.range;
+        if (edit && endIdx > lineIdx) {
+          // Multi-line replacement
+          const endPos = endIdx < doc.lineCount ? doc.lineAt(endIdx).rangeIncludingLineBreak.end : doc.lineAt(doc.lineCount - 1).rangeIncludingLineBreak.end;
+          range = new vscode.Range(lineIdx, 0, endPos.line, endPos.character);
+        } else {
+          range = originalLine.range;
+        }
         startLine = lineIdx;
       }
 

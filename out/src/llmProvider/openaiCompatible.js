@@ -39,7 +39,6 @@ exports.parseAiResponse = parseAiResponse;
 const https = __importStar(require("https"));
 const http = __importStar(require("http"));
 const url_1 = require("url");
-const fs = __importStar(require("fs"));
 class OpenAICompatibleProvider {
     constructor(config) {
         this.name = config.name;
@@ -83,6 +82,10 @@ class OpenAICompatibleProvider {
                             return;
                         }
                         const content = parsed.choices?.[0]?.message?.content || '';
+                        // DEBUG: print full LLM response to terminal
+                        console.log('=== ErrAnalyst LLM 完整返回 ===');
+                        console.log(content);
+                        console.log('=== End ===');
                         resolve({ content, success: true });
                     }
                     catch (e) {
@@ -103,73 +106,106 @@ class OpenAICompatibleProvider {
     }
 }
 exports.OpenAICompatibleProvider = OpenAICompatibleProvider;
-function buildAnalysisPrompts(result) {
-    const systemPrompt = `You are a Python error analysis expert. Analyze the Python error and return JSON.
-
-Return ONLY valid JSON (no markdown code block markers):
-
-{
-  "errorType": "original error type",
-  "errorMessage": "original error message",
-  "translation": "Chinese translation, wrap key terms with {{keyword}} markers",
-  "keywords": [{"cn": "Chinese term", "en": "English term"}],
-  "analysis": "Root cause analysis in Chinese",
-  "fixSuggestion": "Fix suggestion in Chinese",
-  "fixCode": "The fix code (the corrected Python code snippet) - REQUIRED unless the fix only needs imports. Provide the actual Python code that fixes the error at fixLine. Can be empty string \"\" if the only fix needed is adding imports.",
-  "fixFile": "The EXACT full file path that needs to be fixed - use the absolute path from the error traceback file context below",
-"fixLine": 10,  // OPTIONAL: the EXACT line number where fixCode should be applied. Leave as 0 to let the system use the error line from the traceback.
-"fixImports": ["import math", "from typing import List"]  // optional, new imports to insert at file top. Leave empty array if none needed.
+function buildAnalysisPrompts(result, category, context) {
+    const categoryVal = category || result.category || 'RUNTIME_ERROR';
+    return buildPromptByCategory(result, categoryVal, context);
 }
-
-Rules:
-1. Use {{keyword}} in translation for highlightable terms
-2. Each {{keyword}} must have a matching entry in keywords array
-3. Provide detailed, accurate analysis
-4. fixFile must be the exact file path (absolute path) of the file that needs to be modified
-5. fixImports: ANY new import/from statements needed by the fix, each as a separate string. If the fix requires no new imports, return an empty array []. These will be inserted at the TOP of the file.
-6. fixLine: set to the exact line number where fixCode should replace the existing code. Use 0 if the fix replaces the error line itself. If fixCode is empty (import-only fix), fixLine is ignored.`;
-    let contextCode = '';
-    for (const frame of result.stackFrames) {
-        if (frame.codeLine) {
-            contextCode += `File "${frame.file}", line ${frame.line}, in ${frame.function}\n  ${frame.codeLine}\n`;
-        }
-        else {
-            contextCode += `File "${frame.file}", line ${frame.line}, in ${frame.function}\n`;
-        }
+function buildPromptByCategory(result, category, context) {
+    return { systemPrompt: buildSystemPrompt(category), userPrompt: buildUserPrompt(result, category, context) };
+}
+function buildSystemPrompt(category) {
+    const roles = {
+        COMPILATION_ERROR: '你是 TypeScript/JavaScript 编译错误分析专家。专注于类型错误、语法错误和 ESLint 违规。',
+        DEPENDENCY_ERROR: '你是包管理依赖分析专家。熟悉 npm、yarn、pnpm、pip 依赖冲突。',
+        SYSTEM_ERROR: '你是系统环境配置专家。专注端口冲突、权限问题、命令缺失、环境变量。',
+        RUNTIME_ERROR: '你是运行时错误分析专家。可以解析 Python、JavaScript、TypeScript 等多种语言的堆栈跟踪。',
+        UNKNOWN: '你是通用错误分析专家。根据终端输出和项目配置文件推断项目类型和错误根因。',
+    };
+    const roleText = roles[category] || roles.UNKNOWN;
+    // 输出格式：JSON，字段包括 errorType, errorMessage, translation, keywords[], analysis, fixSuggestion, actions[](edit_file/run_command/info_only)
+    return '你是ErrAnalyst错误分析助手。分类：' + category + '。' + roleText + ' 输出JSON格式，字段：errorType,errorMessage,translation(用{{keyword}}包裹术语),keywords[{cn,en}],analysis(中文分析),fixSuggestion(中文建议),actions[{type,title,description,edits[],commands[]}]。actions支持edit_file(edits:[{file,startLine,endLine,newText}])、run_command(commands:[{cmd,cwd,description,autoApprove}])、info_only。';
+}
+function buildUserPrompt(result, category, context) {
+    const labels = {
+        COMPILATION_ERROR: '🛠️ 编译错误', DEPENDENCY_ERROR: '📦 依赖错误',
+        SYSTEM_ERROR: '⚙️ 系统错误', RUNTIME_ERROR: '▶️ 运行时错误', UNKNOWN: '❓ 未知',
+    };
+    let lines = [];
+    // ═══ 第1部分：报错文件（最重要，放开头）═══
+    if (context && context.mainFile) {
+        lines.push('## 报错文件');
+        lines.push('路径：' + context.mainFile.path);
+        lines.push('（第' + context.mainFile.startLine + '-' + context.mainFile.endLine + '行，>>>标记报错行所在位置）');
+        lines.push('```');
+        lines.push(context.mainFile.content);
+        lines.push('```');
+        lines.push('');
     }
-    // Read source code context from traceback files
-    let sourceContext = '';
-    const seen = new Set();
-    for (const frame of result.stackFrames) {
-        if (!frame.file || seen.has(frame.file))
-            continue;
-        seen.add(frame.file);
-        try {
-            const fileContent = fs.readFileSync(frame.file, 'utf-8');
-            const fileLines = fileContent.split('\n');
-            const start = Math.max(0, frame.line - 15);
-            const end = Math.min(fileLines.length, frame.line + 5);
-            sourceContext += `=== ${frame.file} (lines ${start + 1}-${end}) ===\n`;
-            for (let i = start; i < end; i++) {
-                const marker = (i === frame.line - 1) ? '>>>' : '   ';
-                sourceContext += marker + ' ' + (i + 1) + ': ' + fileLines[i] + '\n';
+    else {
+        // 保底：直接从终端输出提供信息
+        lines.push('## 终端输出');
+        lines.push('```');
+        lines.push((result.fullTraceback || '').slice(0, 2000));
+        lines.push('```');
+        lines.push('');
+    }
+    // ═══ 第2部分：其他相关文件 ═══
+    if (context) {
+        const otherFiles = [];
+        for (const f of context.relatedFiles) {
+            if (context.mainFile && f.path === context.mainFile.path)
+                continue;
+            otherFiles.push(f);
+        }
+        if (otherFiles.length > 0 || context.configFiles.length > 0) {
+            lines.push('## 相关代码');
+            for (const f of otherFiles.slice(0, 3)) {
+                lines.push('');
+                lines.push('### ' + f.path + '（第' + f.startLine + '-' + f.endLine + '行）');
+                lines.push('```');
+                lines.push(f.content);
+                lines.push('```');
             }
-            sourceContext += '\n';
-        }
-        catch {
-            // File not accessible, skip
+            for (const f of context.configFiles.slice(0, 3)) {
+                lines.push('');
+                lines.push('### ' + f.path);
+                lines.push('```');
+                lines.push(f.content);
+                lines.push('```');
+            }
+            lines.push('');
         }
     }
-    const userPrompt = `Error:
-${result.fullTraceback}
-
-Stack context:
-${contextCode || '(no context code)'}
-
-${sourceContext ? 'Source code context (>>> marks the error line):\n' + sourceContext : ''}
-
-Analyze this error and return JSON with the EXACT fixFile path.`;
-    return { systemPrompt, userPrompt };
+    // ═══ 第3部分：终端输出（精简） ═══
+    // 如果已经有了报错文件，终端输出精简到1500字符
+    if (context && context.mainFile) {
+        lines.push('## 终端输出（精简）');
+        lines.push('```');
+        lines.push((result.fullTraceback || '').slice(0, 1500));
+        lines.push('```');
+        lines.push('');
+    }
+    // ═══ 第4部分：调用栈 ═══
+    if (result.stackFrames.length > 0) {
+        lines.push('## 调用栈');
+        for (const frame of result.stackFrames.slice(0, 5)) {
+            lines.push('  ' + frame.file + ':' + frame.line + ' ' + frame.function);
+        }
+        lines.push('');
+    }
+    // ═══ 第5部分：分析指令（放结尾，利用LLM的"近因效应"） ═══
+    lines.push('## 分析指令');
+    lines.push('对以上提供的信息做以下分析：');
+    lines.push('');
+    lines.push('1. 从报错文件开始，逐行检查报错位置附近的代码，找出导致错误的根本原因');
+    lines.push('2. 在analysis字段中必须引用【具体行号】来说明问题所在（格式："文件:行号 处的代码XXX"）');
+    lines.push('3. 不允许使用"某行""某位置""某处"等模糊表述——具体行号就在你面前');
+    lines.push('4. 如果其他相关文件中有引起问题的代码，一并分析引用');
+    lines.push('5. fixSuggestion必须给出明确的修改方案，包括改哪个文件的哪一行、改成什么');
+    lines.push('6. 如果是依赖/配置问题，给出具体的配置修改或命令');
+    lines.push('');
+    lines.push('返回JSON。');
+    return lines.join('\n');
 }
 function parseAiResponse(content) {
     try {
@@ -187,7 +223,8 @@ function parseAiResponse(content) {
             fixCode: typeof data.fixCode === 'string' ? data.fixCode : '',
             fixFile: typeof data.fixFile === 'string' ? data.fixFile : '',
             fixImports: Array.isArray(data.fixImports) ? data.fixImports : [],
-            fixLine: typeof data.fixLine === 'number' ? data.fixLine : 0
+            fixLine: typeof data.fixLine === 'number' ? data.fixLine : 0,
+            actions: Array.isArray(data.actions) ? data.actions : undefined,
         };
     }
     catch (e) {

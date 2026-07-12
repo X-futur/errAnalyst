@@ -9,6 +9,7 @@ import { AnalysisWebview } from './analysisWebview';
 import { FixProvider } from './fixProvider';
 import { ErrorHistoryViewProvider } from './errorHistoryView';
 import { createProvider, buildAnalysisPrompts, parseAiResponse } from './llmProvider';
+import { ErrorContextBuilder } from './contextBuilder';
 import type { ErrorAnalysisResult } from './config';
 
 let terminalWatcher: TerminalWatcher;
@@ -118,6 +119,7 @@ export function deactivate() {
 
 async function autoAnalyze(result: ErrorAnalysisResult): Promise<void> {
   const config = Config.getInstance();
+  const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
 
   if (config.getEnableCache()) {
     const topFile = result.stackFrames.length > 0
@@ -149,7 +151,8 @@ async function autoAnalyze(result: ErrorAnalysisResult): Promise<void> {
   const llm = createProvider(provider);
   if (!llm) return;
 
-  const prompts = buildAnalysisPrompts(result);
+  const context = ErrorContextBuilder.buildPreciseContext(result, workspaceFolders);
+  const prompts = buildAnalysisPrompts(result, result.category, context);
   const response = await llm.analyze({
     systemPrompt: prompts.systemPrompt,
     userPrompt: prompts.userPrompt,
@@ -163,9 +166,19 @@ async function autoAnalyze(result: ErrorAnalysisResult): Promise<void> {
 
   const parsed = parseAiResponse(response.content);
   if (!parsed) {
+    console.log('=== ErrAnalyst: Failed to parse LLM response ===');
+    console.log('Raw content:', response.content.slice(0, 500));
     vscode.window.showErrorMessage('ErrAnalyst: Failed to parse AI response');
     return;
   }
+
+  console.log('=== ErrAnalyst 解析结果 ===');
+  console.log('analysis:', parsed.analysis?.slice(0, 300));
+  console.log('fixSuggestion:', parsed.fixSuggestion?.slice(0, 200));
+  console.log('fixCode length:', parsed.fixCode?.length || 0);
+  console.log('actions count:', parsed.actions?.length || 0);
+  console.log('keywords count:', parsed.keywords?.length || 0);
+  console.log('=== End ===');
 
   result.errorType = parsed.errorType || result.errorType;
   result.errorMessage = parsed.errorMessage || result.errorMessage;
@@ -178,6 +191,12 @@ async function autoAnalyze(result: ErrorAnalysisResult): Promise<void> {
   result.fixImports = parsed.fixImports;
   result.fixLine = parsed.fixLine;
 
+  const actions = parsed.actions;
+  fixProvider.prepareFix(result, parsed.fixCode);
+  if (actions && actions.length > 0) {
+    fixProvider.prepareActions(actions);
+  }
+
   analysisWebview.show(result, {
     translation: parsed.translation,
     keywords: parsed.keywords,
@@ -186,6 +205,13 @@ async function autoAnalyze(result: ErrorAnalysisResult): Promise<void> {
     fixCode: parsed.fixCode
   });
 
+  // Pass terminal output and project file context to webview
+  analysisWebview.showContext(result.fullTraceback, context);
+
+  if (actions && actions.length > 0) {
+    analysisWebview.showActions(actions);
+  }
+
   hoverProvider.showHover(result, {
     translation: parsed.translation,
     keywords: parsed.keywords,
@@ -193,10 +219,13 @@ async function autoAnalyze(result: ErrorAnalysisResult): Promise<void> {
     fixSuggestion: parsed.fixSuggestion
   });
 
-  fixProvider.prepareFix(result, parsed.fixCode);
   errorHistoryViewProvider.refresh();
 
   if (config.getEnableCache()) {
+    result.fixCode = parsed.fixCode;
+    result.fixFile = parsed.fixFile;
+    result.fixImports = parsed.fixImports;
+    result.fixLine = parsed.fixLine;
     errorMemory.cacheResult(result);
   }
 }
