@@ -1,0 +1,244 @@
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.AnalysisWebview = void 0;
+const vscode = __importStar(require("vscode"));
+class AnalysisWebview {
+  private handleWebviewMessage(msg) {
+    switch (msg.type) {
+      case 'highlightEditor': this.highlightInEditor(msg.term); break;
+      case 'applyFix':
+        vscode.commands.executeCommand('errAnalyst.showFixDiff').then(undefined, err => {
+          console.error('ErrAnalyst: Fix command failed:', err);
+        });
+        break;
+    }
+  }
+    constructor() {
+        this.panel = null;
+        this.currentError = null;
+        this.currentAiData = null;
+        this.highlightDecoration = null;
+    }
+    show(error, aiData) {
+        this.currentError = error;
+        if (aiData)
+            this.currentAiData = aiData;
+        if (!this.panel) {
+            this.panel = vscode.window.createWebviewPanel('errAnalyst.analysis', 'ErrAnalyst - 错误分析', vscode.ViewColumn.Beside, { enableScripts: true, retainContextWhenHidden: true });
+            this.panel.onDidDispose(() => { this.panel = null; });
+            this.panel.webview.onDidReceiveMessage(msg => this.handleWebviewMessage(msg));
+        }
+        this.panel.reveal(vscode.ViewColumn.Beside, true);
+        this.updateContent();
+    }
+    close() {
+        if (this.panel) {
+            this.panel.dispose();
+            this.panel = null;
+        }
+        this.clearHighlight();
+    }
+    focus() {
+        if (this.panel)
+            this.panel.reveal(vscode.ViewColumn.Beside, true);
+    }
+    updateContent() {
+        if (!this.panel || !this.currentError)
+            return;
+        const error = this.currentError;
+        const aiData = this.currentAiData;
+        let stackHtml = '';
+        for (const frame of error.stackFrames) {
+            const codeLine = frame.codeLine ? `<div class="code-line">${this.esc(frame.codeLine)}</div>` : '';
+            stackHtml += `<div class="stack-frame"><span class="frame-file">${this.esc(frame.file)}</span>:<span class="frame-line">${frame.line}</span>, in <span class="frame-func">${this.esc(frame.function)}</span>${codeLine}</div>`;
+        }
+        let analysisHtml = '';
+        if (aiData) {
+            let originalHtml = `<div class="error-type">${this.esc(error.errorType)}</div><div class="error-msg">`;
+            originalHtml += this.buildKeywordHtml(error.errorMessage, aiData.keywords);
+            originalHtml += '</div>';
+            let transHtml = aiData.translation;
+            for (const kw of aiData.keywords) {
+                const escaped = this.esc(kw.cn);
+                transHtml = transHtml.replace(new RegExp('\\{\\{' + this.escRegex(kw.en) + '\\}\\}', 'g'), `<span class="hl-keyword" data-en="${this.esc(kw.en)}" data-cn="${escaped}">${escaped}</span>`);
+            }
+            let kwPills = '';
+            for (const kw of aiData.keywords) {
+                kwPills += `<span class="keyword-badge" data-en="${this.esc(kw.en)}" data-cn="${this.esc(kw.cn)}"><span class="kw-en">${this.esc(kw.en)}</span> ↔ <span class="kw-cn">${this.esc(kw.cn)}</span></span>`;
+            }
+            analysisHtml = `
+        <div class="analysis-content">
+          <div class="error-pair">
+            <div class="error-original"><h4>原始报错</h4><pre class="error-text">${originalHtml}</pre></div>
+            <div class="error-translated"><h4>中文翻译</h4><div class="translated-text">${transHtml}</div></div>
+          </div>
+          ${kwPills ? '<div class="keyword-pills">' + kwPills + '</div>' : ''}
+          <div class="section-card"><h4>错误分析</h4><p>${this.esc(aiData.analysis)}</p></div>
+          <div class="section-card fix-card"><h4>修复建议</h4><p>${this.esc(aiData.fixSuggestion)}</p></div>
+          <div class="action-buttons"><button class="btn btn-primary" onclick="applyFix()">🔧 应用修复</button></div>
+        </div>`;
+        }
+        else {
+            analysisHtml = '<div class="analysis-loading"><div class="spinner"></div><p>正在调用 AI 分析...</p></div>';
+        }
+        this.panel.webview.html = this.getHtmlTemplate(stackHtml, analysisHtml);
+    }
+    buildKeywordHtml(text, keywords) {
+        let result = this.esc(text);
+        for (const kw of keywords) {
+            result = result.replace(new RegExp(this.escRegex(kw.en), 'gi'), (match) => `<span class="hl-keyword" data-en="${this.esc(kw.en)}" data-cn="${this.esc(kw.cn)}">${this.esc(match)}</span>`);
+        }
+        return result;
+    }
+    highlightInEditor(term) {
+        this.clearHighlight();
+        const editor = vscode.window.activeTextEditor;
+        if (!editor || !this.currentError)
+            return;
+        this.highlightDecoration = vscode.window.createTextEditorDecorationType({
+            backgroundColor: 'rgba(255, 200, 0, 0.3)',
+            border: '1px solid rgba(255, 200, 0, 0.8)',
+            borderRadius: '3px',
+            fontWeight: 'bold'
+        });
+        const lineIdx = Math.max(0, this.currentError.lineNumber - 1);
+        const text = editor.document.lineAt(lineIdx).text;
+        const ranges = [];
+        let searchFrom = 0, idx;
+        while ((idx = text.toLowerCase().indexOf(term.toLowerCase(), searchFrom)) !== -1) {
+            ranges.push(new vscode.Range(lineIdx, idx, lineIdx, idx + term.length));
+            searchFrom = idx + term.length;
+        }
+        if (ranges.length > 0)
+            editor.setDecorations(this.highlightDecoration, ranges);
+    }
+    clearHighlight() {
+        if (this.highlightDecoration) {
+            this.highlightDecoration.dispose();
+            this.highlightDecoration = null;
+        }
+    }
+    esc(str) {
+        return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+    }
+    escRegex(str) {
+        return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+    getHtmlTemplate(stackHtml, analysisHtml) {
+        return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+:root{--bg:#1e1e1e;--bg-card:#252526;--text:#d4d4d4;--text-muted:#808080;--accent:#007acc;--border:#3c3c3c;--error-border:#c04040;--highlight-bg:rgba(230,184,0,0.15);--highlight-border:#e6b800;--success:#40c060;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);padding:12px;font-size:13px;line-height:1.5;}
+h3{margin-bottom:8px;font-size:15px;}h4{font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;color:#999;}
+.stack-section{background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:12px;}
+.stack-frame{padding:3px 0;border-bottom:1px solid var(--border);font-family:Consolas,Monaco,monospace;font-size:12px;}
+.stack-frame:last-child{border-bottom:none;}.frame-file{color:#569cd6;}.frame-line{color:#b5cea8;}.frame-func{color:#dcdcaa;}
+.code-line{color:#ce9178;padding-left:16px;margin-top:2px;font-size:11px;}
+.hl-keyword{background:var(--highlight-bg);border-bottom:2px solid var(--highlight-border);padding:0 2px;border-radius:2px;cursor:pointer;transition:all .15s;}
+.hl-keyword:hover,.hl-keyword.active{background:rgba(230,184,0,0.4)!important;box-shadow:0 0 6px rgba(230,184,0,.3);}
+.error-pair{display:flex;gap:12px;margin-bottom:12px;}
+.error-original,.error-translated{flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:10px;min-width:0;}
+.error-text,.translated-text{font-family:Consolas,Monaco,monospace;font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word;}
+.error-type{color:#f48771;font-weight:bold;margin-bottom:4px;}
+.error-msg{color:#ce9178;}
+.section-card{background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:8px;}
+.fix-card{border-left:3px solid var(--success);}
+.fix-card p{color:var(--success);}
+.keyword-pills{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;}
+.keyword-badge{background:var(--bg-card);border:1px solid var(--highlight-border);border-radius:12px;padding:3px 8px;font-size:11px;cursor:pointer;transition:all .15s;}
+.keyword-badge:hover{background:rgba(230,184,0,0.2);box-shadow:0 0 4px rgba(230,184,0,.3);}
+.kw-en{color:#569cd6;}.kw-cn{color:#e6b800;}
+.action-buttons{display:flex;gap:8px;margin-top:8px;}
+.btn{padding:6px 16px;border:none;border-radius:4px;font-size:13px;cursor:pointer;transition:background .15s;}
+.btn-primary{background:var(--accent);color:#fff;}.btn-primary:hover{background:#1a8ad4;}
+.analysis-loading{text-align:center;padding:40px;color:var(--text-muted);}
+.spinner{width:24px;height:24px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 12px;}
+@keyframes spin{to{transform:rotate(360deg);}}
+</style>
+</head>
+<body>
+<h3>\u26a0\ufe0f ${this.esc(this.currentError?.errorType || 'Error')}</h3>
+<div class="stack-section"><h4>\u8c03\u7528\u6808</h4>${stackHtml}</div>
+${analysisHtml}
+<script>
+(function(){var vscode=acquireVsCodeApi();
+var vsApi=vscode;
+function highlightKeywords(term){document.querySelectorAll('.hl-keyword').forEach(function(el){el.classList.add('active');});}
+function unhighlightKeywords(){document.querySelectorAll('.hl-keyword').forEach(function(el){el.classList.remove('active');});}
+document.addEventListener('mouseover',function(e){
+var t=e.target;
+if(t&&t.classList&&t.classList.contains('hl-keyword')){var kw=t.getAttribute('data-en')||t.textContent;
+highlightKeywords(kw);
+vsApi.postMessage({type:'highlightEditor',term:kw});}});
+document.addEventListener('mouseout',function(e){
+var t=e.target;
+if(t&&t.classList&&t.classList.contains('hl-keyword')){unhighlightKeywords();}});
+function attachBadgeListeners(){document.querySelectorAll('.keyword-badge').forEach(function(b){
+b.addEventListener('mouseover',function(){var en=this.getAttribute('data-en');
+highlightKeywords(en);
+vsApi.postMessage({type:'highlightEditor',term:en});});
+b.addEventListener('mouseout',function(){unhighlightKeywords();});});}
+attachBadgeListeners();
+var observer=new MutationObserver(function(){attachBadgeListeners();});
+observer.observe(document.body,{childList:true,subtree:true});
+window.applyFix=function(){vsApi.postMessage({type:'applyFix'});};})();
+</script>
+</body>
+</html>`;
+    }
+    handleWebviewMessage(msg) {
+        switch (msg.type) {
+            case 'highlightEditor':
+                this.highlightInEditor(msg.term);
+                break;
+            case 'applyFix':
+                try {
+                    vscode.commands.executeCommand('errAnalyst.showFixDiff');
+                }
+                catch (e) {
+                    console.error('ErrAnalyst: Failed to execute fix command', e);
+                }
+                break;
+        }
+    }
+}
+exports.AnalysisWebview = AnalysisWebview;
+//# sourceMappingURL=analysisWebview.js.map

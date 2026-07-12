@@ -1,0 +1,111 @@
+编写并发布一个 VS Code 插件其实比想象中更像在做一个前端项目。因为 VS Code 本身是基于 Electron 开发的，所以你可以直接用 TypeScript 或 JavaScript 来写插件。
+
+下面是完整且高 scannable 的核心流程：
+
+## 1. 环境准备与项目初始化
+
+你需要先安装好 **Node.js** 和 **Git**，然后全局安装 VS Code 官方的脚手架工具 `yo` (Yeoman) 和 `generator-code`。
+
+```bash
+npm install -g yo generator-code
+
+```
+
+安装完成后，在终端运行以下命令来生成一个全新的插件项目模板：
+
+```bash
+yo code
+
+```
+
+运行后，脚手架会交替询问你几个配置问题（建议选择 **TypeScript**，因为 VS Code 的 API 提示对 TS 支持极其完美）。你可以一路按回车选择默认配置。
+
+---
+
+## 2. 核心文件与代码编写
+
+项目生成后，你会发现有两块最核心的地方需要你关注：
+
+### `package.json`（插件的“大脑”）
+
+这里定义了插件的元数据，更重要的是定义了 **`contributes` (贡献点)**。比如你要注册一个快捷键、一个命令，或者一个右键菜单，都必须在这里声明。
+
+```json
+"contributes": {
+  "commands": [
+    {
+      "command": "my-plugin.helloWorld",
+      "title": "Hello World"
+    }
+  ]
+}
+
+```
+
+### `src/extension.ts`（插件的“肌肉”）
+
+这里是执行具体逻辑的地方。当用户触发了你在 `package.json` 里声明的命令时，对应的代码就会在这里被调用。
+
+```typescript
+import * as vscode from 'vscode';
+
+// 插件被激活时调用
+export function activate(context: vscode.ExtensionContext) {
+    // 注册命令，这里的字符串必须和 package.json 中的 command 完全一致
+    let disposable = vscode.commands.registerCommand('my-plugin.helloWorld', () => {
+        // 弹出一个提示框
+        vscode.window.showInformationMessage('你好，这是我的第一个插件！');
+    });
+
+    context.subscriptions.push(disposable);
+}
+
+// 插件被停用时调用
+export function deactivate() {}
+
+```
+
+---
+
+## 3. 本地调试
+
+1. 用 VS Code 打开你创建的这个项目文件夹。
+2. 按下 **F5** 键（或者点击左侧调试面板的绿色启动箭头）。
+3. 这时会弹出一个全新的 VS Code 窗口（标题写着 `[扩展开发宿主]`）。
+4. 在这个新窗口中，按下 `Ctrl+Shift+P` (Mac 上是 `Cmd+Shift+P`) 唤起命令面板，输入 **Hello World** 并回车，你就能看到右下角的弹窗提示了。
+
+---
+
+## 4. 发布到微软应用市场
+
+发布插件需要两步：在微软官网注册账号获取 Token，然后使用命令行工具将其打包上传。
+
+1. **获取个人访问令牌 (PAT):** 需要注册微软账号.
+前往 [Azure DevOps](https://dev.azure.com/) 注册并登录。点击右上角的用户设置图标，选择 **Personal Access Tokens**。创建一个新的 Token，注意 **Organization** 必须选 `All accessible organizations`，**Scopes** 选 `Marketplace (Publish)`。复制保存好这个 Token。
+
+
+2. **创建发布者账号:** VS Code Marketplace.
+前往 [VS Code Marketplace 管理后台](https://marketplace.visualstudio.com/manage)，用刚刚的微软账号登录，创建一个 **Publisher (发布者)**，记下它的唯一 ID。
+
+
+3. **配置 package.json:** 本地项目修改.
+回到你的本地项目，打开 `package.json`，把里面的 `publisher` 字段修改为你刚刚在后台创建的发布者 ID。
+
+
+4. **登录并发布:** 使用 vsce 工具.
+在本地终端全局安装官方打包工具：`npm install -g @vscode/vsce`。
+接着在项目根目录下依次运行以下命令：
+
+```bash
+# 登录你的发布者账号（会提示你输入第1步保存的 Token）
+vsce login 你的发布者ID
+
+# 直接打包并发布到应用市场
+vsce publish
+
+```
+
+
+---
+
+> 💡 **小提示：** 如果你不想公开上传到应用市场，只想在团队内部或者自己电脑上用，可以运行 `vsce package`。这会在本地打包出一个 `.vsix` 文件。直接把这个文件拖进 VS Code，或者在扩展面板点击右上角的 `...` 选择 `从 VSIX 安装` 就能直接部署使用了。

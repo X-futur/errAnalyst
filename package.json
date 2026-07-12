@@ -1,0 +1,148 @@
+{
+  "name": "err-analyst",
+  "displayName": "ErrAnalyst - 错误智能分析",
+  "description": "智能分析 Python 报错，定位代码位置，AI 翻译错误信息并提供一键修复",
+  "version": "0.1.0",
+  "publisher": "errAnalyst",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "error",
+    "analysis",
+    "python",
+    "traceback",
+    "ai",
+    "deepseek",
+    "kimi",
+    "qwen"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "errAnalyst.focusPanel",
+        "title": "ErrAnalyst: 查看错误分析面板"
+      },
+      {
+        "command": "errAnalyst.analyzeLastError",
+        "title": "ErrAnalyst: 分析上一个报错"
+      },
+      {
+        "command": "errAnalyst.clearCache",
+        "title": "ErrAnalyst: 清除错误分析缓存"
+      },
+      {
+        "command": "errAnalyst.showFixDiff",
+        "title": "ErrAnalyst: 查看修复方案 Diff"
+      },
+      {
+        "command": "errAnalyst.applyFix",
+        "title": "ErrAnalyst: 应用 AI 修复"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "errAnalyst-sidebar",
+          "title": "ErrAnalyst",
+          "icon": "$(error)"
+        }
+      ]
+    },
+    "views": {
+      "errAnalyst-sidebar": [
+        {
+          "type": "webview",
+          "id": "errAnalyst.errorHistory",
+          "name": "错误历史"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "ErrAnalyst",
+      "properties": {
+        "errAnalyst.providers": {
+          "type": "array",
+          "default": [
+            {
+              "name": "DeepSeek",
+              "baseUrl": "https://api.deepseek.com/v1",
+              "model": "deepseek-chat",
+              "apiKey": "",
+              "enabled": true
+            },
+            {
+              "name": "Kimi (Moonshot)",
+              "baseUrl": "https://api.moonshot.cn/v1",
+              "model": "moonshot-v1-8k",
+              "apiKey": "",
+              "enabled": false
+            },
+            {
+              "name": "Qwen (通义千问)",
+              "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+              "model": "qwen-turbo",
+              "apiKey": "",
+              "enabled": false
+            }
+          ],
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "baseUrl": { "type": "string" },
+              "model": { "type": "string" },
+              "apiKey": { "type": "string" },
+              "enabled": { "type": "boolean" }
+            }
+          },
+          "description": "AI 模型提供商配置列表"
+        },
+        "errAnalyst.activeProvider": {
+          "type": "string",
+          "default": "DeepSeek",
+          "description": "当前使用的 AI 提供商名称"
+        },
+        "errAnalyst.autoAnalyze": {
+          "type": "boolean",
+          "default": true,
+          "description": "终端检测到报错时自动调用 AI 分析"
+        },
+        "errAnalyst.enableCache": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用错误缓存"
+        },
+        "errAnalyst.aiTimeout": {
+          "type": "number",
+          "default": 15000,
+          "description": "AI 请求超时时间（毫秒）"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.96.0",
+    "@types/node": "^20.0.0",
+    "@types/mocha": "^10.0.0",
+    "typescript": "^5.3.0",
+    "eslint": "^8.50.0",
+    "mocha": "^10.0.0",
+    "glob": "^10.0.0"
+  }
+}
