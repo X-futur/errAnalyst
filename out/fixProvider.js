@@ -42,7 +42,7 @@ class FixProvider {
     }
     prepareFix(error, fixCode) {
         this.currentError = error;
-        this.currentFixCode = fixCode;
+        this.currentFixCode = typeof fixCode === 'string' ? fixCode : '';
     }
     async resolveFilePath(filePath) {
         try {
@@ -77,8 +77,8 @@ class FixProvider {
             vscode.window.showWarningMessage('ErrAnalyst: No error data');
             return;
         }
-        if (!this.currentFixCode) {
-            vscode.window.showInformationMessage('ErrAnalyst: AI did not provide a fix code (only fix suggestion)');
+        if (!this.currentFixCode || typeof this.currentFixCode !== 'string') {
+            vscode.window.showInformationMessage('ErrAnalyst: The AI analysis did not produce executable fix code. Please review the fix suggestion shown in the panel.');
             return;
         }
         const { filePath, lineNumber } = this.currentError;

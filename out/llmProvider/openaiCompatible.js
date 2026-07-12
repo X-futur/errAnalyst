@@ -114,7 +114,7 @@ Return ONLY valid JSON (no markdown code block markers):
   "keywords": [{"cn": "Chinese term", "en": "English term"}],
   "analysis": "Root cause analysis in Chinese",
   "fixSuggestion": "Fix suggestion in Chinese",
-  "fixCode": "Fixed code snippet if applicable"
+  "fixCode": "The fix code (the corrected Python code snippet) - REQUIRED, provide actual Python code that fixes the error. If the fix involves multiple lines, include all of them."
 }
 
 Rules:
@@ -152,7 +152,7 @@ function parseAiResponse(content) {
             keywords: data.keywords || [],
             analysis: data.analysis || '',
             fixSuggestion: data.fixSuggestion || '',
-            fixCode: data.fixCode || ''
+            fixCode: typeof data.fixCode === 'string' ? data.fixCode : ''
         };
     }
     catch (e) {
