@@ -38,14 +38,14 @@ export class FixProvider {
       vscode.window.showWarningMessage('ErrAnalyst: No error data');
       return;
     }
-    if (!this.currentFixCode) {
+    if (!this.currentFixCode && (!this.currentError?.fixImports || this.currentError.fixImports.length === 0)) {
       vscode.window.showInformationMessage('ErrAnalyst: The AI analysis did not produce executable fix code. Please review the fix suggestion shown in the panel.');
       return;
     }
 
     // Try to determine the target file - prioritize fixFile from AI
     let targetFile = this.currentError.fixFile || this.currentError.filePath;
-    let targetLine = this.currentError.lineNumber;
+    let targetLine = this.currentError.fixLine || this.currentError.lineNumber;
 
     // If still empty, try extracting from stack frames
     if (!targetFile && this.currentError.stackFrames.length > 0) {
@@ -115,19 +115,20 @@ export class FixProvider {
       const doc = await vscode.workspace.openTextDocument(uri);
       const editor = await vscode.window.showTextDocument(doc);
       const relPath = vscode.workspace.asRelativePath(uri);
+      const fixImports = this.currentError?.fixImports || [];
 
       const fixLines = this.currentFixCode.split('\n');
       let range: vscode.Range;
       let newText: string;
       let startLine: number;
+      let importInsertCount = 0;
 
       if (insertAsNew || targetLine <= 0) {
-        // Insert at end of file
         const lastLineIdx = doc.lineCount - 1;
         const lastLine = doc.lineAt(lastLineIdx);
         newText = '\n' + fixLines.join('\n') + '\n';
         range = new vscode.Range(lastLineIdx, lastLine.text.length, lastLineIdx, lastLine.text.length);
-        startLine = -1; // calculated after edit
+        startLine = -1;
       } else {
         const lineIdx = Math.max(0, targetLine - 1);
         const originalLine = doc.lineAt(lineIdx);
@@ -137,50 +138,101 @@ export class FixProvider {
         startLine = lineIdx;
       }
 
-      // Show diff preview first
-      const previewOriginal = (insertAsNew || targetLine <= 0)
-        ? '(新代码)'
-        : doc.lineAt(Math.max(0, targetLine - 1)).text;
-      const detailStr = relPath + (targetLine > 0 ? ':' + targetLine : '')
-        + '\n\n' + previewOriginal + '\n\u2192\n' + newText;
+      // Determine if there's actual code to replace (vs only imports)
+      const hasCodeFix = this.currentFixCode.trim().length > 0;
+
+      // Build preview: show both imports (if any) and code replacement
+      let previewParts: string[] = [];
+      if (fixImports.length > 0) {
+        previewParts.push('(顶部插入): ' + fixImports.join('\n'));
+      }
+      if (hasCodeFix && !insertAsNew && targetLine > 0) {
+        const orig = doc.lineAt(Math.max(0, targetLine - 1)).text;
+        previewParts.push(relPath + ':' + targetLine + '\n' + orig + '\n\u2192\n' + newText);
+      } else if (hasCodeFix && fixImports.length === 0) {
+        previewParts.push('(新代码): ' + newText);
+      }
+      const detailStr = previewParts.join('\n---\n');
 
       const choice = await vscode.window.showInformationMessage(
-        'ErrAnalyst: 应用修复?', { modal: false, detail: detailStr }, '\u5e94\u7528', '\u53d6\u6d88'
+        'ErrAnalyst: \u5e94\u7528\u4fee\u590d?', { modal: false, detail: detailStr }, '\u5e94\u7528', '\u53d6\u6d88'
       );
       if (choice !== '\u5e94\u7528') return;
 
-      // Apply the edit
-      await editor.edit(editBuilder => {
-        editBuilder.replace(range, newText);
-      });
+      // Step 1: Insert imports at the top of the file (if any)
+      if (fixImports.length > 0) {
+        await editor.edit(editBuilder => {
+          const firstPos = new vscode.Position(0, 0);
+          editBuilder.insert(firstPos, fixImports.join('\n') + '\n\n');
+        });
+        importInsertCount = fixImports.length + 1; // +1 for the blank line
+      }
+
+      // Step 2: Skip if fixCode is empty (only imports needed)
+
+      if (hasCodeFix) {
+        if (insertAsNew || targetLine <= 0) {
+          // Insert at end
+          await editor.edit(editBuilder => {
+            editBuilder.replace(range, newText);
+          });
+        } else {
+          const adjustedLine = targetLine + importInsertCount;
+          const lineIdx = Math.max(0, adjustedLine - 1);
+          if (lineIdx < doc.lineCount) {
+            await editor.edit(editBuilder => {
+              const targetLineRange = doc.lineAt(lineIdx).range;
+              const indent = doc.lineAt(lineIdx).text.match(/^\s*/)?.[0] || '';
+              const indentedFix = fixLines.map(l => indent + l).join('\n');
+              editBuilder.replace(targetLineRange, indentedFix);
+            });
+          }
+        }
+      }
 
       // Calculate changed lines for highlighting
-      if (startLine < 0) {
-        startLine = Math.max(0, doc.lineCount - fixLines.length - 1);
+      const topStart = 0;
+      const topEnd = Math.max(0, importInsertCount - 2); // the import lines themselves
+      let codeStart: number;
+      let codeEnd: number;
+
+      if (insertAsNew || targetLine <= 0) {
+        codeStart = Math.max(0, doc.lineCount - fixLines.length - 1);
+        codeEnd = doc.lineCount - 1;
+      } else {
+        codeStart = Math.max(0, targetLine + importInsertCount - 1);
+        codeEnd = Math.min(codeStart + fixLines.length - 1, doc.lineCount - 1);
       }
-      const endLine = Math.min(startLine + fixLines.length - 1, doc.lineCount - 1);
 
       const decorationRanges: vscode.Range[] = [];
-      for (let l = startLine; l <= endLine; l++) {
-        decorationRanges.push(doc.lineAt(l).range);
+      // Highlight import lines
+      if (importInsertCount > 0) {
+        for (let l = topStart; l <= topEnd && l < doc.lineCount; l++) {
+          decorationRanges.push(doc.lineAt(l).range);
+        }
+      }
+      // Highlight code change lines
+      for (let l = codeStart; l <= codeEnd && l < doc.lineCount; l++) {
+        // Avoid duplicates if ranges overlap
+        if (!decorationRanges.some(r => r.start.line === l)) {
+          decorationRanges.push(doc.lineAt(l).range);
+        }
       }
 
-      // Create green highlight decoration
-      this.clearDecoration();
-      this.decorationType = vscode.window.createTextEditorDecorationType({
-        backgroundColor: 'rgba(60, 180, 75, 0.2)',
-        border: '1px solid rgba(60, 180, 75, 0.6)',
-        borderRadius: '3px',
-        isWholeLine: true,
-        overviewRulerColor: 'rgba(60, 180, 75, 0.6)',
-        overviewRulerLane: vscode.OverviewRulerLane.Left
-      });
-      editor.setDecorations(this.decorationType, decorationRanges);
+      if (decorationRanges.length > 0) {
+        this.clearDecoration();
+        this.decorationType = vscode.window.createTextEditorDecorationType({
+          backgroundColor: 'rgba(60, 180, 75, 0.2)',
+          border: '1px solid rgba(60, 180, 75, 0.6)',
+          borderRadius: '3px',
+          isWholeLine: true,
+          overviewRulerColor: 'rgba(60, 180, 75, 0.6)',
+          overviewRulerLane: vscode.OverviewRulerLane.Left
+        });
+        editor.setDecorations(this.decorationType, decorationRanges);
+        editor.revealRange(decorationRanges[0], vscode.TextEditorRevealType.InCenter);
+      }
 
-      // Scroll to the first changed line
-      editor.revealRange(decorationRanges[0], vscode.TextEditorRevealType.InCenter);
-
-      // Show Accept/Revert buttons
       const action = await vscode.window.showInformationMessage(
         'ErrAnalyst: ' + relPath + ' \u7eff\u8272\u9ad8\u4eae\u884c\u5df2\u4fee\u6539',
         '\u2713 \u4fdd\u7559', '\u21a9 \u64a4\u9500'
@@ -194,14 +246,12 @@ export class FixProvider {
         this.clearDecoration();
         vscode.window.showInformationMessage('ErrAnalyst: \u4fee\u590d\u5df2\u4fdd\u7559');
       }
-      // If dismissed (user clicks elsewhere), decoration stays until next fix or cleanup
 
     } catch (e) {
       this.clearDecoration();
       vscode.window.showErrorMessage('ErrAnalyst: \u4fee\u590d\u5931\u8d25: ' + (e instanceof Error ? e.message : String(e)));
     }
   }
-
   private clearDecoration(): void {
     if (this.decorationType) {
       this.decorationType.dispose();

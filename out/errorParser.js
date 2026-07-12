@@ -191,37 +191,247 @@ class ErrorParser {
         return stackFrameTop ? `${base}:${stackFrameTop}` : base;
     }
     /**
-     * Extract "Traceback..." block from terminal output buffer.
+     * Implements the findError.md workflow:
+     * Step 0: Preprocess - clean noise from terminal output
+     * Step 1: Check exit code in last 10 lines (symptom, not root cause)
+     * Step 2: Classify by keyword priority: Compilation > Dependency > System > Runtime
+     * Step 3: File path heuristic fallback
+     * Step 4: Generate action plan and suggestion
      */
-    static extractErrorBlock(buffer) {
-        // Try Traceback pattern first
-        const tb = this.extractTraceback(buffer);
-        if (tb)
-            return tb;
-        // Try SyntaxError/error without Traceback
-        const fileErrorPattern = /(?:File\s+"[^"]+",\s+line\s+\d+[^\n]*\n(?:.*\n)*?[A-Za-z.]+(?:Error|Exception|Warning|StopIteration):)/;
-        const match = buffer.match(fileErrorPattern);
-        if (match)
-            return match[0];
-        return null;
+    static identify(terminalOutput) {
+        // Step 0: Preprocess - clean noise
+        const cleanOutput = this.preprocess(terminalOutput);
+        const lines = cleanOutput.split('\n');
+        const lastTenLines = lines.slice(-10);
+        const firstErrorLine = this.extractFirstErrorLine(cleanOutput);
+        // Step 1: Check exit code
+        const hasExitCode = this.detectExitCode(lastTenLines);
+        // Step 2-3: Classify by keywords with priority, fallback to file path heuristic
+        const category = this.classifyByKeywords(firstErrorLine, cleanOutput);
+        // Step 4: Generate advice
+        const { actionPlan, suggestion } = this.generateAdvice(category, hasExitCode);
+        return { category, hasExitCode, actionPlan, suggestion, firstErrorLine };
     }
-    static extractTraceback(buffer) {
-        const tracebackStart = buffer.lastIndexOf('Traceback (most recent call last)');
-        if (tracebackStart === -1)
+    /**
+     * Step 0: Preprocess terminal output - remove noise.
+     * Strips timestamps like [2026-07-12 10:00:00] and separator lines.
+     */
+    static preprocess(output) {
+        let clean = output.replace(/\[\d{4}-\d{2}-\d{2}\s*\d{2}:\d{2}:\d{2}(?:\.\d+)?\]/g, '');
+        clean = clean.replace(/^[-=]{3,}$/gm, '');
+        return clean;
+    }
+    /**
+     * Step 0 helper: Extract the first line matching /Error|ERR|Failed|Exception/.
+     * Falls back to last non-empty line if no match.
+     */
+    static extractFirstErrorLine(output) {
+        const lines = output.split('\n');
+        for (const line of lines) {
+            if (/Error|ERR|Failed|Exception/i.test(line)) {
+                return line.trim();
+            }
+        }
+        return lines[lines.length - 1]?.trim() || '';
+    }
+    /**
+     * Step 1: Check if the last 10 lines contain a non-zero exit code pattern.
+     * Exit code is a symptom, not the root cause.
+     */
+    static detectExitCode(lastTenLines) {
+        const exitCodePattern = /exit code [1-9]\d*|terminated with status [1-9]\d*|Process exited with code [1-9]/i;
+        return lastTenLines.some(l => exitCodePattern.test(l));
+    }
+    /**
+     * Steps 2-3: Classify error by keyword priority, then file path heuristic.
+     * Priority: Compilation > Dependency > System > Runtime.
+     */
+    static classifyByKeywords(firstErrorLine, fullOutput) {
+        const combined = firstErrorLine + '\n' + fullOutput;
+        // 2.1 — COMPILATION_ERROR (highest priority)
+        if (/TS\d{4,}|ESLint|Failed to compile|SyntaxError.*unexpected/is.test(firstErrorLine)) {
+            return 'COMPILATION_ERROR';
+        }
+        // 2.2 — DEPENDENCY_ERROR
+        if (/npm ERR!|pip install|yarn add|ERESOLVE|ECONNRESET/i.test(firstErrorLine) ||
+            /Module not found|Cannot find module/i.test(combined)) {
+            return 'DEPENDENCY_ERROR';
+        }
+        // 2.3 — SYSTEM_ERROR
+        if (/command not found|EADDRINUSE|Permission denied|Cannot find module 'node'/i.test(firstErrorLine) ||
+            /command not found|Permission denied/i.test(combined)) {
+            return 'SYSTEM_ERROR';
+        }
+        // 2.4 — RUNTIME_ERROR
+        if (/ReferenceError|TypeError|RangeError|Cannot read property|is not a function|undefined/i.test(firstErrorLine)) {
+            return 'RUNTIME_ERROR';
+        }
+        // Step 3: File path heuristic fallback
+        // Check firstErrorLine for file paths or generic Error: prefix with file paths in full output
+        const filePathPattern = /([a-zA-Z]:\\[^\s]+\.(js|ts|py|java|go)|[^\s]+\.(js|ts|py):\d+)/i;
+        const hasFilePathInError = filePathPattern.test(firstErrorLine);
+        const hasFilePathInOutput = filePathPattern.test(fullOutput);
+        const hasGenericError = /Error:|error:|ERR/i.test(firstErrorLine);
+        if (hasFilePathInError || (hasGenericError && hasFilePathInOutput)) {
+            return 'RUNTIME_ERROR';
+        }
+        return 'UNKNOWN';
+    }
+    /**
+     * Step 4: Generate action plan and suggestion based on category and exit code.
+     */
+    static generateAdvice(category, hasExitCode) {
+        const advice = {
+            COMPILATION_ERROR: {
+                plan: '检查 TypeScript 类型或 ESLint 规则，修复语法错误',
+                exitSuggestion: '⚠️ 编译失败，请查看上方带行号的错误详情',
+                normalSuggestion: '按 Ctrl+Shift+Y 打开问题面板查看更清晰的错误列表'
+            },
+            DEPENDENCY_ERROR: {
+                plan: '检查 package.json / requirements.txt，重新安装依赖或清理缓存',
+                exitSuggestion: '⚠️ 依赖安装失败，请检查网络或镜像源配置',
+                normalSuggestion: '尝试删除 node_modules 后重新安装，或检查包名是否正确'
+            },
+            SYSTEM_ERROR: {
+                plan: '检查环境变量、端口占用或文件权限',
+                exitSuggestion: '⚠️ 系统错误导致程序退出，请检查配置和环境',
+                normalSuggestion: '确认命令已安装、端口未被占用、文件可读可执行'
+            },
+            RUNTIME_ERROR: {
+                plan: '检查变量定义、数据类型或异步逻辑',
+                exitSuggestion: '⚠️ 程序以非零退出码结束，请向上滚动找到第一个红色的 Error: 行查看具体原因',
+                normalSuggestion: '按 Ctrl+Shift+Y 打开问题面板，可以看更清晰的错误列表'
+            },
+            UNKNOWN: {
+                plan: '查看第一个包含文件路径的行，按住 Ctrl 点击跳转',
+                exitSuggestion: '⚠️ 程序以非零退出码结束，请向上滚动找到第一个报错行',
+                normalSuggestion: '检查命令是否正确、环境变量是否配置、网络是否通畅'
+            }
+        };
+        const a = advice[category];
+        return {
+            actionPlan: a.plan,
+            suggestion: hasExitCode ? a.exitSuggestion : a.normalSuggestion
+        };
+    }
+    /**
+     * Extract error block from terminal output buffer.
+      * Pure string operations (no regex). Scans backwards for efficiency.
+      * Handles:
+      * - Standard Python tracebacks ("Traceback (most recent call last)")
+      * - Standalone SyntaxError without traceback
+      * - Shell/compiler errors (error: / exception: patterns)
+      */
+    static extractErrorBlock(buffer) {
+        // Quick pre-filter: skip buffers without any error indicators
+        if (!buffer.includes('Traceback') && !buffer.includes('Error:') &&
+            !buffer.includes('Exception:') && !buffer.includes('Warning:') &&
+            !buffer.includes('ERR!') && !buffer.includes('SyntaxError') &&
+            !buffer.includes('exit code') && !buffer.includes('command not found') &&
+            !buffer.includes('Permission denied') && !buffer.includes('Module not found') &&
+            !buffer.includes('Failed')) {
             return null;
-        // From traceback start to end of buffer (or next prompt)
-        const afterTraceback = buffer.slice(tracebackStart);
-        const lines = afterTraceback.split('\n');
-        // Collect lines until we hit what looks like a new command prompt
-        let endIdx = lines.length;
-        for (let i = 1; i < lines.length; i++) {
-            const trimmed = lines[i].trim();
-            if (trimmed && (trimmed.startsWith('$') || trimmed.startsWith('%') || trimmed.startsWith('>>>'))) {
-                endIdx = i;
+        }
+        const lines = buffer.split('\n');
+        // --- Pass 1: Find the error line (scan backwards from the end) ---
+        let errorEnd = -1;
+        for (let i = lines.length - 1; i >= 0; i--) {
+            const line = lines[i];
+            if (line.length === 0)
+                continue;
+            // Check for Traceback (standard Python traceback)
+            if (line.trimStart().startsWith('Traceback')) {
+                return this.extractFullTraceback(lines, i);
+            }
+            // Check for Python error pattern: Type: message
+            // Where Type ends with Error/Exception/Warning/StopIteration
+            const colonIdx = line.indexOf(':');
+            if (colonIdx > 0) {
+                const beforeColon = line.substring(0, colonIdx).trimEnd();
+                if (this.looksLikePythonError(beforeColon)) {
+                    errorEnd = i;
+                    break;
+                }
+            }
+            // Check for generic shell/compiler errors
+            const lower = line.toLowerCase();
+            if (lower.includes('error:') || lower.includes('exception:') ||
+                lower.includes('err!') || lower.includes('syntaxerror') ||
+                lower.includes('command not found') || lower.includes('module not found') ||
+                lower.includes('failed to') || lower.includes('permission denied') ||
+                lower.includes('eslint')) {
+                errorEnd = i;
                 break;
             }
         }
-        return lines.slice(0, endIdx).join('\n');
+        if (errorEnd === -1)
+            return null;
+        // --- Pass 2: Find the start of the error block (scan backwards) ---
+        let start = errorEnd;
+        let lastFileLine = -1;
+        for (let i = errorEnd - 1; i >= 0; i--) {
+            const line = lines[i];
+            const trimmed = line.trimStart();
+            // Stop at shell prompts or REPL prompts
+            if (trimmed.startsWith('$') || trimmed.startsWith('%') || trimmed.startsWith('>')) {
+                start = i + 1;
+                break;
+            }
+            // If we find Traceback, start from here (standard traceback)
+            if (trimmed.startsWith('Traceback')) {
+                start = i;
+                break;
+            }
+            // Record File line position but keep scanning (might find Traceback above)
+            if (trimmed.startsWith('File "') && trimmed.includes('", line ')) {
+                lastFileLine = i;
+            }
+            // Stop at blank line before error content
+            if (line.trim().length === 0) {
+                start = i + 1;
+                break;
+            }
+        }
+        // If no Traceback found, use the last File line as start (standalone error)
+        if (start === errorEnd && lastFileLine >= 0) {
+            start = lastFileLine;
+        }
+        return lines.slice(start, errorEnd + 1).join('\n');
+    }
+    /**
+     * Check if a word looks like a Python error type.
+     * Pure string ops: must end with Error/Exception/Warning/StopIteration
+     * and have at least one letter before the suffix.
+     */
+    static looksLikePythonError(word) {
+        const suffixes = ['Error', 'Exception', 'Warning', 'StopIteration'];
+        for (const suffix of suffixes) {
+            if (word.endsWith(suffix)) {
+                const prefixLen = word.length - suffix.length;
+                if (prefixLen >= 1) {
+                    // Verify the character before the suffix is a letter or dot
+                    const ch = word[prefixLen - 1];
+                    const code = ch.charCodeAt(0);
+                    return (code >= 65 && code <= 90) ||
+                        (code >= 97 && code <= 122) ||
+                        code === 46; // '.' for module names
+                }
+            }
+        }
+        return false;
+    }
+    /**
+     * Extract a full traceback block from the traceback line to the end (or next prompt).
+     */
+    static extractFullTraceback(lines, tracebackIdx) {
+        const result = [];
+        for (let i = tracebackIdx; i < lines.length; i++) {
+            const trimmed = lines[i].trimStart();
+            if (trimmed.startsWith('$') || trimmed.startsWith('%') || trimmed.startsWith('>'))
+                break;
+            result.push(lines[i]);
+        }
+        return result.join('\n');
     }
 }
 exports.ErrorParser = ErrorParser;

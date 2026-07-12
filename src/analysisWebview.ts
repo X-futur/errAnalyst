@@ -60,6 +60,7 @@ export class AnalysisWebview {
     if (!this.panel || !this.currentError) return;
     const error = this.currentError;
     const aiData = this.currentAiData;
+    const categoryHtml = this.buildCategoryHtml();
     let stackHtml = '';
     for (const frame of error.stackFrames) {
       const codeLine = frame.codeLine ? '<div class="code-line">' + this.esc(frame.codeLine) + '</div>' : '';
@@ -98,9 +99,40 @@ export class AnalysisWebview {
     } else {
       analysisHtml = '<div class="analysis-loading"><div class="spinner"></div><p>正在调用 AI 分析...</p></div>';
     }
-    this.panel.webview.html = this.getHtmlTemplate(stackHtml, analysisHtml);
+    this.panel.webview.html = this.getHtmlTemplate(stackHtml, categoryHtml, analysisHtml);
   }
 
+  private buildCategoryHtml(): string {
+    if (!this.currentError || !this.currentError.category || this.currentError.category === 'UNKNOWN') {
+      return '';
+    }
+    const category = this.currentError.category;
+    const actionPlan = this.currentError.actionPlan || '';
+    const suggestion = this.currentError.suggestion || '';
+    const hasExitCode = this.currentError.hasExitCode;
+    const cfg: Record<string, { label: string; color: string }> = {
+      COMPILATION_ERROR: { label: '🛠️ 编译错误', color: '#d4872e' },
+      DEPENDENCY_ERROR: { label: '📦 依赖错误', color: '#3794ff' },
+      SYSTEM_ERROR: { label: '⚙️ 系统错误', color: '#f44747' },
+      RUNTIME_ERROR: { label: '▶️ 运行时错误', color: '#b180d7' }
+    };
+    const c = cfg[category];
+    if (!c) return '';
+    let html = `<div class="category-section">
+      <div class="category-badge" style="background:${c.color}22;border-left:3px solid ${c.color};color:${c.color}">
+        <span>${c.label}</span>
+      </div>
+      <div class="action-plan-card">
+        <span class="action-icon">📋</span>
+        <span class="action-text">${this.esc(actionPlan)}</span>
+      </div>`;
+    if (hasExitCode) {
+      html += `<div class="exit-code-warning">⚠️ ${this.esc(suggestion)}</div>`;
+    }
+    html += `</div>`;
+    return html;
+  }
+  
   private highlightInEditor(term: string): void {
     this.clearHighlight();
     const editor = vscode.window.activeTextEditor;
@@ -134,7 +166,7 @@ export class AnalysisWebview {
     return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
-  private getHtmlTemplate(stackHtml: string, analysisHtml: string): string {
+  private getHtmlTemplate(stackHtml: string, categoryHtml: string, analysisHtml: string): string {
     return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -145,6 +177,11 @@ export class AnalysisWebview {
 *{box-sizing:border-box;margin:0;padding:0;}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);padding:12px;font-size:13px;line-height:1.5;}
 h3{margin-bottom:8px;font-size:15px;}h4{font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;color:#999;}
+.category-section{margin-bottom:10px;}
+.category-badge{padding:4px 10px;border-radius:4px;font-size:12px;font-weight:600;display:inline-block;margin-bottom:6px;}
+.action-plan-card{background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.4;display:flex;align-items:flex-start;gap:6px;margin-bottom:6px;}
+.action-icon{flex-shrink:0;}
+.exit-code-warning{background:rgba(244,71,71,0.1);border:1px solid rgba(244,71,71,0.3);border-radius:4px;padding:6px 10px;font-size:11px;color:#f48771;}
 .stack-section{background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:12px;}
 .stack-frame{padding:3px 0;border-bottom:1px solid var(--border);font-family:Consolas,Monaco,monospace;font-size:12px;}
 .stack-frame:last-child{border-bottom:none;}.frame-file{color:#569cd6;}.frame-line{color:#b5cea8;}.frame-func{color:#dcdcaa;}
@@ -173,6 +210,7 @@ h3{margin-bottom:8px;font-size:15px;}h4{font-size:12px;text-transform:uppercase;
 </head>
 <body>
 <h3>\u26a0\ufe0f ` + this.esc(this.currentError?.errorType || 'Error') + `</h3>
+` + categoryHtml + `
 <div class="stack-section"><h4>\u8c03\u7528\u6808</h4>` + stackHtml + `</div>
 ` + analysisHtml + `
 <script>

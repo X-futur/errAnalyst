@@ -24,4 +24,6 @@ export interface ParsedAiResponse {
   fixSuggestion: string;
   fixCode: string;
   fixFile: string;
+  fixImports: string[];
+  fixLine: number;
 }

@@ -173,6 +173,8 @@ async function autoAnalyze(result) {
     result.fixSuggestion = parsed.fixSuggestion;
     result.fixCode = parsed.fixCode;
     result.fixFile = parsed.fixFile;
+    result.fixImports = parsed.fixImports;
+    result.fixLine = parsed.fixLine;
     analysisWebview.show(result, {
         translation: parsed.translation,
         keywords: parsed.keywords,

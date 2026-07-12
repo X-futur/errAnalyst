@@ -22,7 +22,15 @@ export interface ErrorAnalysisResult {
   fixSuggestion?: string;
   fixCode?: string;
   fixFile?: string;
+  fixImports?: string[];
+  fixLine?: number;
   timestamp?: number;
+  // findError.md workflow fields
+  category?: string;
+  actionPlan?: string;
+  suggestion?: string;
+  hasExitCode?: boolean;
+  firstErrorLine?: string;
 }
 
 export interface StackFrame {

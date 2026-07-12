@@ -56,7 +56,9 @@ class TerminalWatcher {
                     if (buffer.length > this.MAX_BUFFER_SIZE) {
                         buffer = buffer.slice(-this.MAX_BUFFER_SIZE);
                     }
-                    if (data.includes('Traceback') || data.includes('Error') || data.includes('Exception')) {
+                    const errorIndicators = ['Traceback', 'Error', 'Exception', 'Failed',
+                        'ERR', 'exit code', 'SyntaxError', 'command not found'];
+                    if (errorIndicators.some(p => data.includes(p))) {
                         this.checkForError(buffer);
                     }
                 }
@@ -71,21 +73,40 @@ class TerminalWatcher {
         this.disposables = [];
     }
     checkForError(buffer) {
+        // Step 1: findError.md pipeline (language-agnostic classification)
+        const identification = errorParser_1.ErrorParser.identify(buffer);
+        // Step 2: Python-specific traceback parsing (for structured stack frames)
         const traceback = errorParser_1.ErrorParser.extractErrorBlock(buffer);
-        if (!traceback)
+        const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
+        const parseResult = traceback ? errorParser_1.ErrorParser.parse(traceback, workspaceFolders) : null;
+        // Skip if no meaningful error detected
+        if (identification.category === 'UNKNOWN' && !parseResult)
             return;
-        const errorKey = traceback.slice(0, 200);
+        // Compute debounce key from identification data
+        const errorKey = identification.category + '::' + identification.firstErrorLine.slice(0, 100);
         const now = Date.now();
         if (errorKey === this.lastErrorKey && now - this.lastErrorTime < this.DEBOUNCE_MS) {
             return;
         }
-        const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
-        const result = errorParser_1.ErrorParser.parse(traceback, workspaceFolders);
-        if (!result)
-            return;
+        // Merge: prefer parseResult for structured data, but always include identification
+        const result = parseResult || {
+            errorType: identification.category,
+            errorMessage: identification.firstErrorLine,
+            filePath: '',
+            lineNumber: 0,
+            stackFrames: [],
+            fullTraceback: buffer,
+            timestamp: Date.now()
+        };
+        // Fill in findError.md classification fields
+        result.category = identification.category;
+        result.actionPlan = identification.actionPlan;
+        result.suggestion = identification.suggestion;
+        result.hasExitCode = identification.hasExitCode;
+        result.firstErrorLine = identification.firstErrorLine;
         this.lastErrorKey = errorKey;
         this.lastErrorTime = now;
-        this.lastTraceback = traceback;
+        this.lastTraceback = traceback || '';
         this.onErrorDetected(result);
     }
     getLastTraceback() {

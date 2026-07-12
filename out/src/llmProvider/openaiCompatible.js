@@ -115,15 +115,19 @@ Return ONLY valid JSON (no markdown code block markers):
   "keywords": [{"cn": "Chinese term", "en": "English term"}],
   "analysis": "Root cause analysis in Chinese",
   "fixSuggestion": "Fix suggestion in Chinese",
-  "fixCode": "The fix code (the corrected Python code snippet) - REQUIRED, provide actual Python code that fixes the error. If the fix involves multiple lines, include all of them.",
-  "fixFile": "The EXACT full file path that needs to be fixed - use the absolute path from the error traceback file context below"
+  "fixCode": "The fix code (the corrected Python code snippet) - REQUIRED unless the fix only needs imports. Provide the actual Python code that fixes the error at fixLine. Can be empty string \"\" if the only fix needed is adding imports.",
+  "fixFile": "The EXACT full file path that needs to be fixed - use the absolute path from the error traceback file context below",
+"fixLine": 10,  // OPTIONAL: the EXACT line number where fixCode should be applied. Leave as 0 to let the system use the error line from the traceback.
+"fixImports": ["import math", "from typing import List"]  // optional, new imports to insert at file top. Leave empty array if none needed.
 }
 
 Rules:
 1. Use {{keyword}} in translation for highlightable terms
 2. Each {{keyword}} must have a matching entry in keywords array
 3. Provide detailed, accurate analysis
-4. fixFile must be the exact file path (absolute path) of the file that needs to be modified`;
+4. fixFile must be the exact file path (absolute path) of the file that needs to be modified
+5. fixImports: ANY new import/from statements needed by the fix, each as a separate string. If the fix requires no new imports, return an empty array []. These will be inserted at the TOP of the file.
+6. fixLine: set to the exact line number where fixCode should replace the existing code. Use 0 if the fix replaces the error line itself. If fixCode is empty (import-only fix), fixLine is ignored.`;
     let contextCode = '';
     for (const frame of result.stackFrames) {
         if (frame.codeLine) {
@@ -181,7 +185,9 @@ function parseAiResponse(content) {
             analysis: data.analysis || '',
             fixSuggestion: data.fixSuggestion || '',
             fixCode: typeof data.fixCode === 'string' ? data.fixCode : '',
-            fixFile: typeof data.fixFile === 'string' ? data.fixFile : ''
+            fixFile: typeof data.fixFile === 'string' ? data.fixFile : '',
+            fixImports: Array.isArray(data.fixImports) ? data.fixImports : [],
+            fixLine: typeof data.fixLine === 'number' ? data.fixLine : 0
         };
     }
     catch (e) {
