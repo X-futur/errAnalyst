@@ -82,7 +82,6 @@ class OpenAICompatibleProvider {
                             return;
                         }
                         const content = parsed.choices?.[0]?.message?.content || '';
-                        // DEBUG: print full LLM response to terminal
                         console.log('=== ErrAnalyst LLM 完整返回 ===');
                         console.log(content);
                         console.log('=== End ===');
@@ -106,105 +105,119 @@ class OpenAICompatibleProvider {
     }
 }
 exports.OpenAICompatibleProvider = OpenAICompatibleProvider;
-function buildAnalysisPrompts(result, category, context) {
-    const categoryVal = category || result.category || 'RUNTIME_ERROR';
-    return buildPromptByCategory(result, categoryVal, context);
-}
-function buildPromptByCategory(result, category, context) {
-    return { systemPrompt: buildSystemPrompt(category), userPrompt: buildUserPrompt(result, category, context) };
+// ── Prompt construction ──
+function buildAnalysisPrompts(traceback, category, context) {
+    const categoryVal = category || 'UNKNOWN';
+    return {
+        systemPrompt: buildSystemPrompt(categoryVal),
+        userPrompt: buildUserPrompt(traceback, categoryVal, context),
+    };
 }
 function buildSystemPrompt(category) {
-    const roles = {
-        COMPILATION_ERROR: '你是 TypeScript/JavaScript 编译错误分析专家。专注于类型错误、语法错误和 ESLint 违规。',
-        DEPENDENCY_ERROR: '你是包管理依赖分析专家。熟悉 npm、yarn、pnpm、pip 依赖冲突。',
-        SYSTEM_ERROR: '你是系统环境配置专家。专注端口冲突、权限问题、命令缺失、环境变量。',
-        RUNTIME_ERROR: '你是运行时错误分析专家。可以解析 Python、JavaScript、TypeScript 等多种语言的堆栈跟踪。',
-        UNKNOWN: '你是通用错误分析专家。根据终端输出和项目配置文件推断项目类型和错误根因。',
-    };
-    const roleText = roles[category] || roles.UNKNOWN;
-    // 输出格式：JSON，字段包括 errorType, errorMessage, translation, keywords[], analysis, fixSuggestion, actions[](edit_file/run_command/info_only)
-    return '你是ErrAnalyst错误分析助手。分类：' + category + '。' + roleText + ' 输出JSON格式，字段：errorType,errorMessage,translation(用{{keyword}}包裹术语),keywords[{cn,en}],analysis(中文分析),fixSuggestion(中文建议),actions[{type,title,description,edits[],commands[]}]。actions支持edit_file(edits:[{file,startLine,endLine,newText}])、run_command(commands:[{cmd,cwd,description,autoApprove}])、info_only。';
+    const roleText = category === 'UNKNOWN'
+        ? '你是通用 Python 错误分析专家。根据终端输出和项目配置文件推断错误根因。'
+        : '你是 Python 错误分析专家。精通 Python 异常处理、调试和修复。';
+    return `你是 ErrAnalyst 错误分析助手。分类：${category}。${roleText}
+输出 JSON 格式，字段：
+- errorType: string（原始错误类型，与输入一致）
+- errorMessage: string（原始错误消息，与输入一致）
+- translation: string（中文翻译，用 {{keyword}} 包裹英文术语）
+- keywords: [{cn: string, en: string}]（中英术语对照表）
+- analysis: string（中文根因分析，必须引用具体行号，格式为 "文件:行号"）
+- fixSuggestion: string（中文修复建议，纯文字描述，不需要代码）
+${category === 'UNKNOWN' ? '- category: string（你判断的错误类别，可选值：COMPILATION_ERROR/DEPENDENCY_ERROR/SYSTEM_ERROR/RUNTIME_ERROR/UNKNOWN）\n' : ''}
+注意：只返回 JSON，不要包含其他文字。`;
 }
-function buildUserPrompt(result, category, context) {
-    const labels = {
-        COMPILATION_ERROR: '🛠️ 编译错误', DEPENDENCY_ERROR: '📦 依赖错误',
-        SYSTEM_ERROR: '⚙️ 系统错误', RUNTIME_ERROR: '▶️ 运行时错误', UNKNOWN: '❓ 未知',
-    };
-    let lines = [];
-    // ═══ 第1部分：报错文件（最重要，放开头）═══
-    if (context && context.mainFile) {
-        lines.push('## 报错文件');
-        lines.push('路径：' + context.mainFile.path);
-        lines.push('（第' + context.mainFile.startLine + '-' + context.mainFile.endLine + '行，>>>标记报错行所在位置）');
-        lines.push('```');
-        lines.push(context.mainFile.content);
-        lines.push('```');
-        lines.push('');
-    }
-    else {
-        // 保底：直接从终端输出提供信息
-        lines.push('## 终端输出');
-        lines.push('```');
-        lines.push((result.fullTraceback || '').slice(0, 2000));
-        lines.push('```');
-        lines.push('');
-    }
-    // ═══ 第2部分：其他相关文件 ═══
-    if (context) {
-        const otherFiles = [];
-        for (const f of context.relatedFiles) {
-            if (context.mainFile && f.path === context.mainFile.path)
-                continue;
-            otherFiles.push(f);
+function buildUserPrompt(traceback, category, context) {
+    const lines = [];
+    // ═══ Part 1: 结构化报错数据 ═══
+    lines.push('## Error Details');
+    lines.push('');
+    lines.push(`Type: ${traceback.errorType}`);
+    lines.push(`Message: ${traceback.errorMessage}`);
+    lines.push('');
+    if (traceback.chain.length > 0) {
+        lines.push('Error chain:');
+        for (const entry of traceback.chain) {
+            const rel = entry.relationship === 'cause' ? 'cause' : 'context';
+            lines.push(`  [${rel}] ${entry.filePath}:${entry.lineNumber} — ${entry.errorType}: ${entry.errorMessage.slice(0, 100)}`);
         }
-        if (otherFiles.length > 0 || context.configFiles.length > 0) {
-            lines.push('## 相关代码');
-            for (const f of otherFiles.slice(0, 3)) {
-                lines.push('');
-                lines.push('### ' + f.path + '（第' + f.startLine + '-' + f.endLine + '行）');
-                lines.push('```');
-                lines.push(f.content);
-                lines.push('```');
-            }
-            for (const f of context.configFiles.slice(0, 3)) {
-                lines.push('');
-                lines.push('### ' + f.path);
-                lines.push('```');
-                lines.push(f.content);
-                lines.push('```');
-            }
+        lines.push(`  [primary] ${traceback.filePath}:${traceback.lineNumber} — ${traceback.errorType}: ${traceback.errorMessage.slice(0, 100)}`);
+        lines.push('');
+    }
+    // ═══ Part 2: 相关源代码（按优先级排序） ═══
+    if (context) {
+        lines.push('## Source Context');
+        lines.push('');
+        if (context.mainFile) {
+            lines.push(`### ${context.mainFile.path}:${context.mainFile.startLine}-${context.mainFile.endLine} (error location)`);
+            lines.push('```');
+            lines.push(context.mainFile.content);
+            lines.push('```');
+            lines.push('');
+        }
+        for (const f of context.stackFiles) {
+            lines.push(`### ${f.path}:${f.startLine}-${f.endLine}`);
+            lines.push('```');
+            lines.push(f.content);
+            lines.push('```');
+            lines.push('');
+        }
+        for (const f of context.configFiles.slice(0, 3)) {
+            lines.push(`### ${f.path}:${f.startLine}-${f.endLine}`);
+            lines.push('```');
+            lines.push(f.content);
+            lines.push('```');
+            lines.push('');
+        }
+        for (const f of context.siblingFiles.slice(0, 2)) {
+            lines.push(`### ${f.path}:${f.startLine}-${f.endLine}`);
+            lines.push('```');
+            lines.push(f.content);
+            lines.push('```');
             lines.push('');
         }
     }
-    // ═══ 第3部分：终端输出（精简） ═══
-    // 如果已经有了报错文件，终端输出精简到1500字符
-    if (context && context.mainFile) {
-        lines.push('## 终端输出（精简）');
+    else {
+        // 保底：直接从终端输出提供信息
+        lines.push('## Terminal Output');
         lines.push('```');
-        lines.push((result.fullTraceback || '').slice(0, 1500));
+        lines.push(traceback.fullTraceback.slice(0, 2000));
         lines.push('```');
         lines.push('');
     }
-    // ═══ 第4部分：调用栈 ═══
-    if (result.stackFrames.length > 0) {
-        lines.push('## 调用栈');
-        for (const frame of result.stackFrames.slice(0, 5)) {
-            lines.push('  ' + frame.file + ':' + frame.line + ' ' + frame.function);
+    // ═══ Part 3: 调用栈 ═══
+    if (traceback.stackFrames.length > 0) {
+        lines.push('## Call Stack');
+        for (const frame of traceback.stackFrames.slice(0, 10)) {
+            lines.push(`  ${frame.file}:${frame.line} ${frame.function}`);
         }
         lines.push('');
     }
-    // ═══ 第5部分：分析指令（放结尾，利用LLM的"近因效应"） ═══
-    lines.push('## 分析指令');
-    lines.push('对以上提供的信息做以下分析：');
+    if (traceback.chain.length > 0) {
+        lines.push('## Chained Exceptions Call Stack');
+        for (const entry of traceback.chain) {
+            lines.push(`  [${entry.relationship}] ${entry.errorType}:`);
+            for (const frame of entry.stackFrames.slice(0, 5)) {
+                lines.push(`    ${frame.file}:${frame.line} ${frame.function}`);
+            }
+        }
+        lines.push('');
+    }
+    // ═══ Part 4: 分析指令 ═══
+    lines.push('## Instructions');
     lines.push('');
-    lines.push('1. 从报错文件开始，逐行检查报错位置附近的代码，找出导致错误的根本原因');
-    lines.push('2. 在analysis字段中必须引用【具体行号】来说明问题所在（格式："文件:行号 处的代码XXX"）');
-    lines.push('3. 不允许使用"某行""某位置""某处"等模糊表述——具体行号就在你面前');
-    lines.push('4. 如果其他相关文件中有引起问题的代码，一并分析引用');
-    lines.push('5. fixSuggestion必须给出明确的修改方案，包括改哪个文件的哪一行、改成什么');
-    lines.push('6. 如果是依赖/配置问题，给出具体的配置修改或命令');
+    lines.push('Analyze the error above and provide:');
     lines.push('');
-    lines.push('返回JSON。');
+    lines.push('1. translation: Chinese translation of the error message, wrap English terms with {{keyword}} markers');
+    lines.push('2. keywords: Chinese-English term mapping table');
+    lines.push('3. analysis: Root cause analysis in Chinese, MUST reference specific file:line numbers');
+    lines.push('4. fixSuggestion: Fix suggestion in Chinese, text description only, no code');
+    if (category === 'UNKNOWN') {
+        lines.push('5. category: Your best guess for the error category');
+    }
+    lines.push('');
+    lines.push('Return JSON only.');
     return lines.join('\n');
 }
 function parseAiResponse(content) {
@@ -220,11 +233,7 @@ function parseAiResponse(content) {
             keywords: data.keywords || [],
             analysis: data.analysis || '',
             fixSuggestion: data.fixSuggestion || '',
-            fixCode: typeof data.fixCode === 'string' ? data.fixCode : '',
-            fixFile: typeof data.fixFile === 'string' ? data.fixFile : '',
-            fixImports: Array.isArray(data.fixImports) ? data.fixImports : [],
-            fixLine: typeof data.fixLine === 'number' ? data.fixLine : 0,
-            actions: Array.isArray(data.actions) ? data.actions : undefined,
+            category: data.category,
         };
     }
     catch (e) {

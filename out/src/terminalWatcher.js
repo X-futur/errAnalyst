@@ -35,7 +35,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TerminalWatcher = void 0;
 const vscode = __importStar(require("vscode"));
-const errorParser_1 = require("./errorParser");
+const pythonTraceback_1 = require("./parser/pythonTraceback");
+const errorLinkProvider_1 = require("./ui/errorLinkProvider");
 class TerminalWatcher {
     constructor(onErrorDetected) {
         this.disposables = [];
@@ -44,15 +45,16 @@ class TerminalWatcher {
         this.lastTraceback = '';
         this.DEBOUNCE_MS = 3000;
         this.MAX_BUFFER_SIZE = 100 * 1024;
+        this.lineBuffers = new Map();
         this.onErrorDetected = onErrorDetected;
     }
     activate() {
+        console.log('TerminalWatcher: activate()');
+        // ── 触发 1: onDidEndTerminalShellExecution (shell integration) ──
         this.disposables.push(vscode.window.onDidEndTerminalShellExecution(async (event) => {
-            // Only analyze when command fails (non-zero exit code)
             const exitCode = event.exitCode;
-            if (exitCode === 0 || exitCode === undefined)
+            if (exitCode === undefined)
                 return;
-            // Execution ended, read full output
             const execution = event.execution;
             let buffer = '';
             try {
@@ -63,54 +65,133 @@ class TerminalWatcher {
                     }
                 }
             }
-            catch (e) {
-                // Stream ended or error reading
+            catch {
                 return;
             }
             if (!buffer)
                 return;
-            this.checkForError(buffer, exitCode);
+            if (exitCode !== 0) {
+                this.checkForError(buffer, exitCode);
+            }
+            else {
+                this.checkForSupplementaryError(buffer);
+            }
+        }));
+        // ── 触发 2: TerminalLinkProvider ──
+        const linkProvider = new errorLinkProvider_1.ErrorLinkProvider_((line, terminal) => {
+            const termId = terminal.name;
+            let buf = this.lineBuffers.get(termId) || '';
+            buf += line + '\n';
+            if (buf.length > this.MAX_BUFFER_SIZE)
+                buf = buf.slice(-this.MAX_BUFFER_SIZE);
+            this.lineBuffers.set(termId, buf);
+            setTimeout(() => {
+                const fullBuf = this.lineBuffers.get(termId) || '';
+                this.checkForStreamData(fullBuf);
+            }, 500);
+        });
+        this.disposables.push(vscode.window.registerTerminalLinkProvider(linkProvider));
+        console.log('TerminalWatcher: linkProvider registered');
+        // ── 触发 3: onDidWriteTerminalData (直接尝试，不用 typeof 检查) ──
+        try {
+            const win = vscode.window;
+            if (typeof win.onDidWriteTerminalData === 'function') {
+                console.log('TerminalWatcher: onDidWriteTerminalData IS available');
+                this.disposables.push(win.onDidWriteTerminalData((event) => {
+                    const data = event.data;
+                    console.log('TerminalWatcher: onDidWriteTerminalData got data:', data.slice(0, 100));
+                    const terminalId = event.terminal?.name || 'unknown';
+                    let buf = this.lineBuffers.get(terminalId) || '';
+                    buf += data;
+                    if (buf.length > this.MAX_BUFFER_SIZE)
+                        buf = buf.slice(-this.MAX_BUFFER_SIZE);
+                    this.lineBuffers.set(terminalId, buf);
+                    if (this.hasErrorKeywords(data)) {
+                        setTimeout(() => {
+                            this.checkForStreamData(buf);
+                        }, 300);
+                    }
+                }));
+            }
+            else {
+                console.log('TerminalWatcher: onDidWriteTerminalData NOT available');
+            }
+        }
+        catch (e) {
+            console.log('TerminalWatcher: onDidWriteTerminalData error:', e.message);
+        }
+        // ── 触发 4: onDidStartTerminalShellExecution ──
+        this.disposables.push(vscode.window.onDidStartTerminalShellExecution(async (event) => {
+            // 新命令开始时清空该终端的缓冲区，避免旧错误干扰
+            const termId = event.terminal.name;
+            this.lineBuffers.set(termId, '');
+            console.log('TerminalWatcher: cleared buffer for', termId);
+            const execution = event.execution;
+            let buffer = '';
+            try {
+                for await (const data of execution.read()) {
+                    buffer += data;
+                    if (buffer.length > this.MAX_BUFFER_SIZE)
+                        buffer = buffer.slice(-this.MAX_BUFFER_SIZE);
+                    if (this.hasErrorKeywords(data)) {
+                        setTimeout(() => this.checkForStreamData(buffer), 200);
+                    }
+                }
+            }
+            catch { /* ignore */ }
         }));
     }
     deactivate() {
         this.disposables.forEach(d => d.dispose());
         this.disposables = [];
     }
+    hasErrorKeywords(data) {
+        const kw = [
+            'Traceback', 'Error:', 'Exception:',
+            'SyntaxError', 'ModuleNotFoundError', 'ZeroDivisionError',
+            'TypeError', 'ValueError', 'NameError', 'KeyError',
+        ];
+        return kw.some(k => data.includes(k));
+    }
     checkForError(buffer, exitCode) {
-        // Step 1: findError.md pipeline (language-agnostic classification)
-        const identification = errorParser_1.ErrorParser.identify(buffer);
-        // Step 2: Python-specific traceback parsing (for structured stack frames)
-        const traceback = errorParser_1.ErrorParser.extractErrorBlock(buffer);
+        this.processBuffer(buffer, exitCode);
+    }
+    checkForSupplementaryError(buffer) {
+        if (!buffer.includes('Traceback'))
+            return;
+        this.processBuffer(buffer);
+    }
+    checkForStreamData(buffer) {
+        if (!buffer)
+            return;
+        this.processBuffer(buffer);
+    }
+    processBuffer(buffer, exitCode) {
+        const traceback = pythonTraceback_1.PythonTracebackParser.extractErrorBlock(buffer);
         const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
-        const parseResult = traceback ? errorParser_1.ErrorParser.parse(traceback, workspaceFolders) : null;
-        // Skip if no meaningful error detected
-        if (identification.category === 'UNKNOWN' && !parseResult)
+        const parseResult = traceback ? pythonTraceback_1.PythonTracebackParser.parse(traceback, workspaceFolders) : null;
+        if (!parseResult)
             return;
-        // Compute debounce key from identification data
-        const errorKey = identification.category + '::' + identification.firstErrorLine.slice(0, 100);
+        const errorKey = parseResult.errorType + '::' + parseResult.errorMessage.slice(0, 100);
         const now = Date.now();
-        if (errorKey === this.lastErrorKey && now - this.lastErrorTime < this.DEBOUNCE_MS) {
+        if (errorKey === this.lastErrorKey && now - this.lastErrorTime < this.DEBOUNCE_MS)
             return;
-        }
-        // Merge: prefer parseResult for structured data, but always include identification
-        const result = parseResult || {
-            errorType: identification.category,
-            errorMessage: identification.firstErrorLine,
-            filePath: '',
-            lineNumber: 0,
-            stackFrames: [],
-            fullTraceback: buffer,
-            timestamp: Date.now()
+        const result = {
+            errorType: parseResult.errorType,
+            errorMessage: parseResult.errorMessage,
+            filePath: parseResult.filePath,
+            lineNumber: parseResult.lineNumber,
+            stackFrames: parseResult.stackFrames,
+            fullTraceback: parseResult.fullTraceback,
+            chain: parseResult.chain,
+            hasExitCode: exitCode !== undefined ? exitCode !== 0 : true,
+            firstErrorLine: pythonTraceback_1.PythonTracebackParser.extractFirstErrorLine(buffer),
+            timestamp: Date.now(),
         };
-        // Fill in findError.md classification fields
-        result.category = identification.category;
-        result.actionPlan = identification.actionPlan;
-        result.suggestion = identification.suggestion;
-        result.hasExitCode = exitCode ? exitCode !== 0 : identification.hasExitCode;
-        result.firstErrorLine = identification.firstErrorLine;
         this.lastErrorKey = errorKey;
         this.lastErrorTime = now;
         this.lastTraceback = traceback || '';
+        console.log('TerminalWatcher: ERROR DETECTED:', result.errorType);
         this.onErrorDetected(result);
     }
     getLastTraceback() {

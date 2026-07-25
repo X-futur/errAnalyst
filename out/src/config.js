@@ -44,7 +44,9 @@ class Config {
     }
     getProviders() {
         const config = vscode.workspace.getConfiguration('errAnalyst');
-        return config.get('providers', []);
+        const providers = config.get('providers', []);
+        console.log('ErrAnalyst: raw providers =', JSON.stringify(providers));
+        return providers;
     }
     getActiveProvider() {
         const providers = this.getProviders();

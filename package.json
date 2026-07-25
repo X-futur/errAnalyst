@@ -1,7 +1,7 @@
 {
   "name": "err-analyst",
-  "displayName": "ErrAnalyst - 错误智能分析",
-  "description": "智能分析 Python 报错，定位代码位置，AI 翻译错误信息并提供一键修复",
+  "displayName": "ErrAnalyst - \u9519\u8bef\u667a\u80fd\u5206\u6790",
+  "description": "\u667a\u80fd\u5206\u6790 Python \u62a5\u9519\uff0c\u5b9a\u4f4d\u4ee3\u7801\u4f4d\u7f6e\uff0cAI \u7ffb\u8bd1\u9519\u8bef\u4fe1\u606f\u5e76\u63d0\u4f9b\u4e00\u952e\u4fee\u590d",
   "version": "0.1.0",
   "publisher": "errAnalyst",
   "license": "MIT",
@@ -30,23 +30,15 @@
     "commands": [
       {
         "command": "errAnalyst.focusPanel",
-        "title": "ErrAnalyst: 查看错误分析面板"
+        "title": "ErrAnalyst: \u67e5\u770b\u9519\u8bef\u5206\u6790\u9762\u677f"
       },
       {
         "command": "errAnalyst.analyzeLastError",
-        "title": "ErrAnalyst: 分析上一个报错"
+        "title": "ErrAnalyst: \u5206\u6790\u4e0a\u4e00\u4e2a\u62a5\u9519"
       },
       {
         "command": "errAnalyst.clearCache",
-        "title": "ErrAnalyst: 清除错误分析缓存"
-      },
-      {
-        "command": "errAnalyst.showFixDiff",
-        "title": "ErrAnalyst: 查看修复方案 Diff"
-      },
-      {
-        "command": "errAnalyst.applyFix",
-        "title": "ErrAnalyst: 应用 AI 修复"
+        "title": "ErrAnalyst: \u6e05\u9664\u9519\u8bef\u5206\u6790\u7f13\u5b58"
       }
     ],
     "viewsContainers": {
@@ -63,7 +55,7 @@
         {
           "type": "webview",
           "id": "errAnalyst.errorHistory",
-          "name": "错误历史"
+          "name": "\u9519\u8bef\u5386\u53f2"
         }
       ]
     },
@@ -76,7 +68,7 @@
             {
               "name": "DeepSeek",
               "baseUrl": "https://api.deepseek.com/v1",
-              "model": "deepseek-chat",
+              "model": "deepseek-v4-pro",
               "apiKey": "",
               "enabled": true
             },
@@ -88,7 +80,7 @@
               "enabled": false
             },
             {
-              "name": "Qwen (通义千问)",
+              "name": "Qwen (\u901a\u4e49\u5343\u95ee)",
               "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
               "model": "qwen-turbo",
               "apiKey": "",
@@ -115,27 +107,27 @@
               }
             }
           },
-          "description": "AI 模型提供商配置列表"
+          "description": "AI \u6a21\u578b\u63d0\u4f9b\u5546\u914d\u7f6e\u5217\u8868"
         },
         "errAnalyst.activeProvider": {
           "type": "string",
           "default": "DeepSeek",
-          "description": "当前使用的 AI 提供商名称"
+          "description": "\u5f53\u524d\u4f7f\u7528\u7684 AI \u63d0\u4f9b\u5546\u540d\u79f0"
         },
         "errAnalyst.autoAnalyze": {
           "type": "boolean",
           "default": true,
-          "description": "终端检测到报错时自动调用 AI 分析"
+          "description": "\u7ec8\u7aef\u68c0\u6d4b\u5230\u62a5\u9519\u65f6\u81ea\u52a8\u8c03\u7528 AI \u5206\u6790"
         },
         "errAnalyst.enableCache": {
           "type": "boolean",
           "default": true,
-          "description": "启用错误缓存"
+          "description": "\u542f\u7528\u9519\u8bef\u7f13\u5b58"
         },
         "errAnalyst.aiTimeout": {
           "type": "number",
           "default": 15000,
-          "description": "AI 请求超时时间（毫秒）"
+          "description": "AI \u8bf7\u6c42\u8d85\u65f6\u65f6\u95f4\uff08\u6beb\u79d2\uff09"
         }
       }
     }

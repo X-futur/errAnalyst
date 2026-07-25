@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { ErrorAnalysisResult } from './config';
+import { ErrorAnalysisResult } from '../config';
 
 interface CacheEntry {
   errorKey: string;
@@ -11,7 +11,6 @@ interface CacheEntry {
   keywords: Array<{ cn: string; en: string }>;
   analysis: string;
   fixSuggestion: string;
-  fixCode: string;
   firstSeen: number;
   lastSeen: number;
   count: number;
@@ -24,7 +23,7 @@ const SIMILARITY_THRESHOLD = 0.6;
 export class ErrorMemory {
   private cache: Map<string, CacheEntry> = new Map();
   private initialized = false;
-  
+
   async init(): Promise<void> {
     if (this.initialized) return;
     try {
@@ -43,7 +42,7 @@ export class ErrorMemory {
       console.error('ErrAnalyst: Failed to load cache', e);
     }
   }
-  
+
   /**
    * Find a cached solution for the given error.
    */
@@ -56,7 +55,7 @@ export class ErrorMemory {
       this.persist();
       return entry;
     }
-    
+
     // Fuzzy match by error type prefix
     const errorTypeBase = errorKey.split(':')[0];
     for (const [key, entry] of this.cache.entries()) {
@@ -67,21 +66,21 @@ export class ErrorMemory {
         return entry;
       }
     }
-    
+
     return null;
   }
-  
+
   /**
    * Cache a new error analysis.
    */
   cacheResult(result: ErrorAnalysisResult): void {
     if (!result.translation) return;
-    
-    const topFile = result.stackFrames.length > 0 
-      ? path.basename(result.stackFrames[result.stackFrames.length - 1].file) 
+
+    const topFile = result.stackFrames.length > 0
+      ? path.basename(result.stackFrames[result.stackFrames.length - 1].file)
       : '';
     const errorKey = `${result.errorType.toLowerCase().replace(/[^a-z0-9]/g, '')}:${topFile}`;
-    
+
     const entry: CacheEntry = {
       errorKey,
       errorType: result.errorType,
@@ -90,16 +89,15 @@ export class ErrorMemory {
       keywords: (result.keywords || []).map(k => ({ cn: k.cn, en: k.en })),
       analysis: result.analysis || '',
       fixSuggestion: result.fixSuggestion || '',
-      fixCode: result.fixCode || '',
       firstSeen: Date.now(),
       lastSeen: Date.now(),
       count: 1
     };
-    
+
     this.cache.set(errorKey, entry);
     this.persist();
   }
-  
+
   /**
    * Get all cached entries (most recent first).
    */
@@ -107,15 +105,14 @@ export class ErrorMemory {
     return Array.from(this.cache.values())
       .sort((a, b) => b.lastSeen - a.lastSeen);
   }
-  
+
   clear(): void {
     this.cache.clear();
     this.persist();
   }
-  
+
   private persist(): void {
     try {
-      // Trim to max size
       const entries = Array.from(this.cache.values())
         .sort((a, b) => b.lastSeen - a.lastSeen)
         .slice(0, MAX_CACHE_SIZE);
@@ -124,7 +121,7 @@ export class ErrorMemory {
       console.error('ErrAnalyst: Failed to persist cache', e);
     }
   }
-  
+
   private similar(a: string, b: string): number {
     if (a === b) return 1;
     const shorter = a.length < b.length ? a : b;
@@ -133,7 +130,7 @@ export class ErrorMemory {
     const editDist = this.levenshtein(shorter, longer);
     return 1 - editDist / longer.length;
   }
-  
+
   private levenshtein(a: string, b: string): number {
     const matrix: number[][] = [];
     for (let i = 0; i <= b.length; i++) {

@@ -1,0 +1,18 @@
+ # ============================================================
+ # ErrAnalyst 错误类别规则
+ # 按 errorType 匹配规则 → 返回类别，未命中则 fallback 到 AI
+ # ============================================================
+ 
+ compilation:
+   - pattern: "SyntaxError|IndentationError|TabError"
+ 
+ dependency:
+   - pattern: "ModuleNotFoundError|ImportError"
+ 
+ system:
+   - pattern: "PermissionError|FileNotFoundError|ConnectionRefusedError|ConnectionError"
+   - pattern: "EOFError|MemoryError|BrokenPipeError"
+   - pattern: "OSError"
+ 
+ # 未匹配到上述规则时，由 AI 判断类别
+ fallback: ai

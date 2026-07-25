@@ -36,51 +36,65 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
+const path = require("path");
 const config_1 = require("./config");
-const errorParser_1 = require("./errorParser");
-const errorMemory_1 = require("./errorMemory");
+const pythonTraceback_1 = require("./parser/pythonTraceback");
+const categoryClassifier_1 = require("./diagnostics/categoryClassifier");
+const contextBuilder_1 = require("./context/contextBuilder");
+const errorMemory_1 = require("./storage/errorMemory");
 const terminalWatcher_1 = require("./terminalWatcher");
-const errorLinkProvider_1 = require("./errorLinkProvider");
-const hoverProvider_1 = require("./hoverProvider");
-const analysisWebview_1 = require("./analysisWebview");
-const fixProvider_1 = require("./fixProvider");
-const errorHistoryView_1 = require("./errorHistoryView");
+const analysisWebview_1 = require("./ui/analysisWebview");
+const hoverProvider_1 = require("./ui/hoverProvider");
+const errorHistoryView_1 = require("./ui/errorHistoryView");
 const llmProvider_1 = require("./llmProvider");
-const contextBuilder_1 = require("./contextBuilder");
 let terminalWatcher;
-let linkProvider;
 let hoverProvider;
 let analysisWebview;
-let fixProvider;
 let errorMemory;
+let categoryClassifier;
+let contextBuilder;
 let errorHistoryViewProvider;
 let lastError = null;
 function activate(context) {
-    console.log('ErrAnalyst: extension activated');
+    console.log("ErrAnalyst: extension activated, vscode version:", vscode.version);
+    console.log("ErrAnalyst: shellIntegration =", !!vscode.window.terminals?.[0]?.shellIntegration);
+    // ── Init modules ──
     errorMemory = new errorMemory_1.ErrorMemory();
     errorMemory.init();
     errorHistoryViewProvider = new errorHistoryView_1.ErrorHistoryViewProvider(context.extensionUri, errorMemory);
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(errorHistoryView_1.ErrorHistoryViewProvider.viewType, errorHistoryViewProvider));
     analysisWebview = new analysisWebview_1.AnalysisWebview();
-    fixProvider = new fixProvider_1.FixProvider();
     hoverProvider = new hoverProvider_1.ErrorHoverProvider();
-    linkProvider = new errorLinkProvider_1.ErrorLinkProvider();
-    context.subscriptions.push(vscode.window.registerTerminalLinkProvider(linkProvider));
-    linkProvider.onHoverDetected((result) => {
-        hoverProvider.revealErrorLine(result);
-        analysisWebview.show(result);
-    });
+    // Initialize category classifier from the bundled YAML rules
+    categoryClassifier = new categoryClassifier_1.CategoryClassifier();
+    const yamlPath = path.join(context.extensionPath, 'src', 'parser', 'error-categories.yaml');
+    categoryClassifier.loadFromYaml(yamlPath);
+    contextBuilder = new contextBuilder_1.ContextBuilder();
+    // ── Terminal watcher ──
     terminalWatcher = new terminalWatcher_1.TerminalWatcher(async (result) => {
         lastError = result;
-        linkProvider.registerError(result);
-        hoverProvider.showHover(result);
+        // 1. Run category classifier
+        const category = categoryClassifier.classify({
+            errorType: result.errorType,
+            errorMessage: result.errorMessage,
+            filePath: result.filePath,
+            lineNumber: result.lineNumber,
+            stackFrames: result.stackFrames,
+            fullTraceback: result.fullTraceback,
+            chain: result.chain,
+        });
+        result.category = category;
+        // 2. Show analysis panel immediately with parsed data
         analysisWebview.show(result);
+        hoverProvider.showHover(result);
+        // 3. Auto-analyze with AI
         if (config_1.Config.getInstance().getAutoAnalyze()) {
-            await autoAnalyze(result);
+            await autoAnalyze(result, category);
         }
         errorHistoryViewProvider.refresh();
     });
     terminalWatcher.activate();
+    // ── Commands ──
     context.subscriptions.push(vscode.commands.registerCommand('errAnalyst.focusPanel', () => {
         analysisWebview.focus();
     }));
@@ -91,11 +105,24 @@ function activate(context) {
             return;
         }
         const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
-        const result = errorParser_1.ErrorParser.parse(tb, workspaceFolders);
-        if (result) {
+        const traceback = pythonTraceback_1.PythonTracebackParser.extractErrorBlock(tb);
+        const parseResult = traceback ? pythonTraceback_1.PythonTracebackParser.parse(traceback, workspaceFolders) : null;
+        if (parseResult) {
+            const result = {
+                errorType: parseResult.errorType,
+                errorMessage: parseResult.errorMessage,
+                filePath: parseResult.filePath,
+                lineNumber: parseResult.lineNumber,
+                stackFrames: parseResult.stackFrames,
+                fullTraceback: parseResult.fullTraceback,
+                chain: parseResult.chain,
+                timestamp: Date.now(),
+            };
+            const category = categoryClassifier.classify(parseResult);
+            result.category = category;
             lastError = result;
             analysisWebview.show(result);
-            await autoAnalyze(result);
+            await autoAnalyze(result, category);
             errorHistoryViewProvider.refresh();
         }
     }));
@@ -103,14 +130,7 @@ function activate(context) {
         errorMemory.clear();
         vscode.window.showInformationMessage('ErrAnalyst: Cache cleared');
     }));
-    context.subscriptions.push(vscode.commands.registerCommand('errAnalyst.showFixDiff', () => {
-        fixProvider.showFixDiff().catch((e) => {
-            console.error('ErrAnalyst: showFixDiff failed:', e);
-        });
-    }));
-    context.subscriptions.push(vscode.commands.registerCommand('errAnalyst.applyFix', () => {
-        fixProvider.applyFixDirectly();
-    }));
+    // ── Status bar ──
     const statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     statusItem.text = '$(error) ErrAnalyst';
     statusItem.tooltip = 'ErrAnalyst - Error Analysis';
@@ -123,28 +143,14 @@ function deactivate() {
     analysisWebview?.close();
     hoverProvider?.clearHover();
 }
-async function autoAnalyze(result) {
+async function autoAnalyze(result, category) {
     const config = config_1.Config.getInstance();
     const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
-    if (config.getEnableCache()) {
-        const topFile = result.stackFrames.length > 0
-            ? result.stackFrames[result.stackFrames.length - 1].file.split('/').pop() || ''
-            : '';
-        const errorKey = errorParser_1.ErrorParser.normalizeErrorKey(result.errorType, topFile);
-        const cached = errorMemory.findCached(errorKey);
-        if (cached) {
-            result.translation = cached.translation;
-            result.keywords = cached.keywords;
-            result.analysis = cached.analysis;
-            result.fixSuggestion = cached.fixSuggestion;
-            result.fixCode = cached.fixCode;
-            analysisWebview.show(result, cached);
-            hoverProvider.showHover(result, cached);
-            fixProvider.prepareFix(result, cached.fixCode);
-            return;
-        }
-    }
+    // ── Check cache ──
+    // [缓存已禁用]
+    // ── Build AI context ──
     const provider = config.getActiveProvider();
+    console.log('ErrAnalyst: active provider =', JSON.stringify(provider));
     if (!provider) {
         vscode.window.showWarningMessage('ErrAnalyst: No AI provider configured. Configure API key in settings.');
         return;
@@ -152,17 +158,28 @@ async function autoAnalyze(result) {
     const llm = (0, llmProvider_1.createProvider)(provider);
     if (!llm)
         return;
-    const context = contextBuilder_1.ErrorContextBuilder.buildPreciseContext(result, workspaceFolders);
-    const prompts = (0, llmProvider_1.buildAnalysisPrompts)(result, result.category, context);
+    const parsedTraceback = {
+        errorType: result.errorType,
+        errorMessage: result.errorMessage,
+        filePath: result.filePath,
+        lineNumber: result.lineNumber,
+        stackFrames: result.stackFrames,
+        fullTraceback: result.fullTraceback,
+        chain: result.chain,
+    };
+    const context = contextBuilder.build(parsedTraceback, workspaceFolders);
+    const prompts = (0, llmProvider_1.buildAnalysisPrompts)(parsedTraceback, category, context);
+    // ── Call AI ──
     const response = await llm.analyze({
         systemPrompt: prompts.systemPrompt,
         userPrompt: prompts.userPrompt,
-        timeout: config.getAiTimeout()
+        timeout: config.getAiTimeout(),
     });
     if (!response.success) {
         vscode.window.showErrorMessage('ErrAnalyst: AI analysis failed - ' + response.error);
         return;
     }
+    // ── Parse AI response ──
     const parsed = (0, llmProvider_1.parseAiResponse)(response.content);
     if (!parsed) {
         console.log('=== ErrAnalyst: Failed to parse LLM response ===');
@@ -173,50 +190,35 @@ async function autoAnalyze(result) {
     console.log('=== ErrAnalyst 解析结果 ===');
     console.log('analysis:', parsed.analysis?.slice(0, 300));
     console.log('fixSuggestion:', parsed.fixSuggestion?.slice(0, 200));
-    console.log('fixCode length:', parsed.fixCode?.length || 0);
-    console.log('actions count:', parsed.actions?.length || 0);
     console.log('keywords count:', parsed.keywords?.length || 0);
     console.log('=== End ===');
+    // ── Apply results ──
     result.errorType = parsed.errorType || result.errorType;
     result.errorMessage = parsed.errorMessage || result.errorMessage;
     result.translation = parsed.translation;
     result.keywords = parsed.keywords;
     result.analysis = parsed.analysis;
     result.fixSuggestion = parsed.fixSuggestion;
-    result.fixCode = parsed.fixCode;
-    result.fixFile = parsed.fixFile;
-    result.fixImports = parsed.fixImports;
-    result.fixLine = parsed.fixLine;
-    const actions = parsed.actions;
-    fixProvider.prepareFix(result, parsed.fixCode);
-    if (actions && actions.length > 0) {
-        fixProvider.prepareActions(actions);
+    // If AI returned a category (fallback case), use it
+    if (parsed.category && result.category === 'UNKNOWN') {
+        result.category = parsed.category;
     }
+    // ── Update UI ──
     analysisWebview.show(result, {
         translation: parsed.translation,
         keywords: parsed.keywords,
         analysis: parsed.analysis,
         fixSuggestion: parsed.fixSuggestion,
-        fixCode: parsed.fixCode
     });
-    // Pass terminal output and project file context to webview
     analysisWebview.showContext(result.fullTraceback, context);
-    if (actions && actions.length > 0) {
-        analysisWebview.showActions(actions);
-    }
     hoverProvider.showHover(result, {
         translation: parsed.translation,
         keywords: parsed.keywords,
         analysis: parsed.analysis,
-        fixSuggestion: parsed.fixSuggestion
+        fixSuggestion: parsed.fixSuggestion,
     });
     errorHistoryViewProvider.refresh();
-    if (config.getEnableCache()) {
-        result.fixCode = parsed.fixCode;
-        result.fixFile = parsed.fixFile;
-        result.fixImports = parsed.fixImports;
-        result.fixLine = parsed.fixLine;
-        errorMemory.cacheResult(result);
-    }
+    // ── Cache result ──
+    // [缓存已禁用]
 }
 //# sourceMappingURL=extension.js.map

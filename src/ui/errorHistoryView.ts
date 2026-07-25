@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ErrorMemory } from './errorMemory';
+import { ErrorMemory } from '../storage/errorMemory';
 
 export class ErrorHistoryViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'errAnalyst.errorHistory';

@@ -1,5 +1,6 @@
-export { LlmRequest, LlmResponse, LlmProvider, ParsedAiResponse, FixAction, FixActionType, FileEdit, CommandAction } from './types';
+export { LlmRequest, LlmResponse, LlmProvider } from './types';
 export { OpenAICompatibleProvider, buildAnalysisPrompts, parseAiResponse } from './openaiCompatible';
+export type { AiAnalysisResult } from './openaiCompatible';
 
 import { LlmProviderConfig } from '../config';
 import { LlmProvider } from './types';
