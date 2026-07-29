@@ -81,10 +81,7 @@ export class TerminalWatcher {
       buf += line + '\n';
       if (buf.length > this.MAX_BUFFER_SIZE) buf = buf.slice(-this.MAX_BUFFER_SIZE);
       this.lineBuffers.set(termId, buf);
-      setTimeout(() => {
-        const fullBuf = this.lineBuffers.get(termId) || '';
-        this.checkForStreamData(fullBuf);
-      }, 500);
+      // 仅追加到缓冲区，不主动触发分析（由触发 4 统一处理）
     });
     this.disposables.push(vscode.window.registerTerminalLinkProvider(linkProvider));
     console.log('TerminalWatcher: linkProvider registered');
@@ -104,16 +101,7 @@ export class TerminalWatcher {
             if (buf.length > this.MAX_BUFFER_SIZE) buf = buf.slice(-this.MAX_BUFFER_SIZE);
             this.lineBuffers.set(terminalId, buf);
 
-            if (this.hasErrorKeywords(data)) {
-              // 取消该终端上一个定时器，确保只有最后一次（数据最完整时）触发
-              const existing = this.dataDebounceTimers.get(terminalId);
-              if (existing) clearTimeout(existing);
-              const timer = setTimeout(() => {
-                this.dataDebounceTimers.delete(terminalId);
-                this.checkForStreamData(this.lineBuffers.get(terminalId) || '');
-              }, 500);
-              this.dataDebounceTimers.set(terminalId, timer);
-            }
+            // 仅追加到缓冲区，不主动触发分析（由触发 4 统一处理）
           })
         );
       } else {
