@@ -3,6 +3,23 @@ import { PythonTracebackParser } from './parser/pythonTraceback';
 import { ErrorAnalysisResult } from './config';
 import { ErrorLinkProvider_ } from './ui/errorLinkProvider';
 
+
+/**
+ * Strip ANSI escape sequences and OSC sequences from terminal output.
+ * Keeps only visible text content.
+ */
+function stripAnsi(text: string): string {
+  // Remove OSC sequences: ESC ] ... BEL (\x07) or ESC ] ... ESC \
+  text = text.replace(/\x1b\].*?(\x07|\x1b\\)/g, '');
+  // Remove CSI sequences: ESC [ <params> <letter>
+  text = text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+  // Remove standalone ESC characters that might remain
+  text = text.replace(/\x1b/g, '');
+  // Remove carriage returns
+  text = text.replace(/\r/g, '');
+  return text;
+}
+
 export type ErrorDetectedCallback = (result: ErrorAnalysisResult) => void;
 
 export class TerminalWatcher {
@@ -167,7 +184,12 @@ export class TerminalWatcher {
     this.processBuffer(buffer);
   }
 
+  /**
+   * Strip ANSI escape sequences from terminal output.
+   * Handles CSI sequences (\x1b[...m) and OSC sequences (\x1b]...;...\x07).
+   */
   private processBuffer(buffer: string, exitCode?: number): void {
+    buffer = stripAnsi(buffer).replace(/\r\n/g, '\n');
     const traceback = PythonTracebackParser.extractErrorBlock(buffer);
     const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
     const parseResult = traceback ? PythonTracebackParser.parse(traceback, workspaceFolders) : null;

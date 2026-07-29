@@ -37,6 +37,21 @@ exports.TerminalWatcher = void 0;
 const vscode = __importStar(require("vscode"));
 const pythonTraceback_1 = require("./parser/pythonTraceback");
 const errorLinkProvider_1 = require("./ui/errorLinkProvider");
+/**
+ * Strip ANSI escape sequences and OSC sequences from terminal output.
+ * Keeps only visible text content.
+ */
+function stripAnsi(text) {
+    // Remove OSC sequences: ESC ] ... BEL (\x07) or ESC ] ... ESC \
+    text = text.replace(/\x1b\].*?(\x07|\x1b\\)/g, '');
+    // Remove CSI sequences: ESC [ <params> <letter>
+    text = text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+    // Remove standalone ESC characters that might remain
+    text = text.replace(/\x1b/g, '');
+    // Remove carriage returns
+    text = text.replace(/\r/g, '');
+    return text;
+}
 class TerminalWatcher {
     constructor(onErrorDetected) {
         this.disposables = [];
@@ -191,7 +206,12 @@ class TerminalWatcher {
             return;
         this.processBuffer(buffer);
     }
+    /**
+     * Strip ANSI escape sequences from terminal output.
+     * Handles CSI sequences (\x1b[...m) and OSC sequences (\x1b]...;...\x07).
+     */
     processBuffer(buffer, exitCode) {
+        buffer = stripAnsi(buffer).replace(/\r\n/g, '\n');
         const traceback = pythonTraceback_1.PythonTracebackParser.extractErrorBlock(buffer);
         const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
         const parseResult = traceback ? pythonTraceback_1.PythonTracebackParser.parse(traceback, workspaceFolders) : null;
