@@ -137,6 +137,8 @@ export function deactivate() {
   hoverProvider?.clearHover();
 }
 
+// 自动分析主流程
+// 获取上下文 -> 构建 Prompt -> 请求 LLM -> 解析响应 -> 刷新 UI 并写入缓存
 async function autoAnalyze(result: ErrorAnalysisResult, category: string): Promise<void> {
   const config = Config.getInstance();
   const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
@@ -173,6 +175,39 @@ async function autoAnalyze(result: ErrorAnalysisResult, category: string): Promi
     category as any,
     context,
   );
+
+  // ── Debug: log full prompt ──
+  console.log('\n' + '='.repeat(80));
+  console.log('═══ 构建上下文概要 ═══');
+  console.log('  mainFile:', context.mainFile?.path || '(none)');
+  console.log('  stackFiles:', context.stackFiles.length);
+  console.log('  configFiles:', context.configFiles.length);
+  console.log('  siblingFiles:', context.siblingFiles.length);
+  for (const f of [context.mainFile, ...context.stackFiles, ...context.configFiles, ...context.siblingFiles].filter(Boolean)) {
+    console.log(`    [${f!.source}] ${f!.path}:${f!.startLine}-${f!.endLine} (${f!.content.length} chars)`);
+  }
+  console.log('\n═══ 报错结构化数据 ═══');
+  console.log(JSON.stringify({
+    errorType: parsedTraceback.errorType,
+    errorMessage: parsedTraceback.errorMessage,
+    filePath: parsedTraceback.filePath,
+    lineNumber: parsedTraceback.lineNumber,
+    chainCount: parsedTraceback.chain.length,
+    stackFrameCount: parsedTraceback.stackFrames.length,
+    stackFrames: parsedTraceback.stackFrames.map(f => ({ file: f.file, line: f.line, func: f.function, code: f.codeLine })),
+    chain: parsedTraceback.chain.map(e => ({
+      errorType: e.errorType,
+      filePath: e.filePath,
+      lineNumber: e.lineNumber,
+      relationship: e.relationship,
+      frames: e.stackFrames.map(f => ({ file: f.file, line: f.line, func: f.function })),
+    })),
+  }, null, 2));
+  console.log('\n═══ systemPrompt (发送给 LLM) ═══');
+  console.log(prompts.systemPrompt);
+  console.log('\n═══ userPrompt (发送给 LLM) ═══');
+  console.log(prompts.userPrompt);
+  console.log('='.repeat(80));
 
   // ── Call AI ──
   const response = await llm.analyze({

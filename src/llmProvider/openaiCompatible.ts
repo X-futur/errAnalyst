@@ -119,102 +119,109 @@ function buildUserPrompt(
 ): string {
   const lines: string[] = [];
 
-  // ═══ Part 1: 结构化报错数据 ═══
-  lines.push('## Error Details');
+  // ═══ Part 1: 原始 traceback 全文（兜底保障） ═══
+  lines.push('## Original Traceback');
   lines.push('');
-  lines.push(`Type: ${traceback.errorType}`);
-  lines.push(`Message: ${traceback.errorMessage}`);
+  lines.push('```');
+  lines.push(traceback.fullTraceback);
+  lines.push('```');
   lines.push('');
 
-  if (traceback.chain.length > 0) {
-    lines.push('Error chain:');
-    for (const entry of traceback.chain) {
-      const rel = entry.relationship === 'cause' ? 'cause' : 'context';
-      lines.push(`  [${rel}] ${entry.filePath}:${entry.lineNumber} — ${entry.errorType}: ${entry.errorMessage.slice(0, 100)}`);
+  // ═══ Part 2: 结构化报错数据（从 parser 提取，可能为空） ═══
+  lines.push('## Parsed Error Data');
+  lines.push('');
+  if (traceback.errorType) {
+    lines.push('Type: ' + traceback.errorType);
+  }
+  if (traceback.errorMessage) {
+    lines.push('Message: ' + traceback.errorMessage);
+  }
+  if (traceback.filePath) {
+    lines.push('File: ' + traceback.filePath + ':' + traceback.lineNumber);
+  }
+  lines.push('');
+
+  if (traceback.stackFrames.length > 0) {
+    lines.push('Stack frames:');
+    for (const frame of traceback.stackFrames.slice(0, 15)) {
+      const code = frame.codeLine ? '  -> ' + frame.codeLine : '';
+      lines.push('  ' + frame.file + ':' + frame.line + ' in ' + frame.function + code);
     }
-    lines.push(`  [primary] ${traceback.filePath}:${traceback.lineNumber} — ${traceback.errorType}: ${traceback.errorMessage.slice(0, 100)}`);
     lines.push('');
   }
 
-  // ═══ Part 2: 相关源代码（按优先级排序） ═══
-  if (context) {
-    lines.push('## Source Context');
+  if (traceback.chain.length > 0) {
+    lines.push('Error chain (cause -> ... -> primary):');
+    for (const entry of traceback.chain) {
+      const rel = entry.relationship === 'cause' ? 'cause' : 'context';
+      lines.push('  [' + rel + '] ' + entry.filePath + ':' + entry.lineNumber + ' -- ' + entry.errorType + ': ' + entry.errorMessage.slice(0, 100));
+      for (const frame of entry.stackFrames.slice(0, 5)) {
+        const code = frame.codeLine ? '  -> ' + frame.codeLine : '';
+        lines.push('    ' + frame.file + ':' + frame.line + ' in ' + frame.function + code);
+      }
+    }
+    lines.push('  [primary] ' + traceback.filePath + ':' + traceback.lineNumber + ' -- ' + traceback.errorType + ': ' + traceback.errorMessage.slice(0, 100));
     lines.push('');
+  }
 
+  // ═══ Part 3: 源代码上下文（contextBuilder 按优先级挑选的） ═══
+  lines.push('## Source Context');
+  lines.push('');
+
+  const hasContext = (context?.mainFile || context?.stackFiles?.length || context?.configFiles?.length || context?.siblingFiles?.length);
+  if (hasContext) {
     if (context.mainFile) {
-      lines.push(`### ${context.mainFile.path}:${context.mainFile.startLine}-${context.mainFile.endLine} (error location)`);
+      lines.push('### ' + context.mainFile.path + ':' + context.mainFile.startLine + '-' + context.mainFile.endLine + ' (error location, P0)');
       lines.push('```');
       lines.push(context.mainFile.content);
       lines.push('```');
       lines.push('');
     }
 
-    for (const f of context.stackFiles) {
-      lines.push(`### ${f.path}:${f.startLine}-${f.endLine}`);
+    for (const f of context.stackFiles.slice(0, 5)) {
+      lines.push('### ' + f.path + ':' + f.startLine + '-' + f.endLine + ' (stack frame)');
       lines.push('```');
       lines.push(f.content);
       lines.push('```');
       lines.push('');
     }
 
-    for (const f of context.configFiles.slice(0, 3)) {
-      lines.push(`### ${f.path}:${f.startLine}-${f.endLine}`);
+    for (const f of context.configFiles.slice(0, 2)) {
+      lines.push('### ' + f.path + ':' + f.startLine + '-' + f.endLine + ' (config)');
       lines.push('```');
       lines.push(f.content);
       lines.push('```');
       lines.push('');
     }
 
-    for (const f of context.siblingFiles.slice(0, 2)) {
-      lines.push(`### ${f.path}:${f.startLine}-${f.endLine}`);
+    for (const f of context.siblingFiles.slice(0, 1)) {
+      lines.push('### ' + f.path + ':' + f.startLine + '-' + f.endLine + ' (sibling)');
       lines.push('```');
       lines.push(f.content);
       lines.push('```');
       lines.push('');
     }
   } else {
-    // 保底：直接从终端输出提供信息
-    lines.push('## Terminal Output');
-    lines.push('```');
-    lines.push(traceback.fullTraceback.slice(0, 2000));
-    lines.push('```');
-    lines.push('');
-  }
-
-  // ═══ Part 3: 调用栈 ═══
-  if (traceback.stackFrames.length > 0) {
-    lines.push('## Call Stack');
-    for (const frame of traceback.stackFrames.slice(0, 10)) {
-      lines.push(`  ${frame.file}:${frame.line} ${frame.function}`);
-    }
-    lines.push('');
-  }
-
-  if (traceback.chain.length > 0) {
-    lines.push('## Chained Exceptions Call Stack');
-    for (const entry of traceback.chain) {
-      lines.push(`  [${entry.relationship}] ${entry.errorType}:`);
-      for (const frame of entry.stackFrames.slice(0, 5)) {
-        lines.push(`    ${frame.file}:${frame.line} ${frame.function}`);
-      }
-    }
+    lines.push('_（contextBuilder 未找到任何相关源代码）_');
     lines.push('');
   }
 
   // ═══ Part 4: 分析指令 ═══
   lines.push('## Instructions');
   lines.push('');
-  lines.push('Analyze the error above and provide:');
+  lines.push('Analyze the Python error above and provide:');
   lines.push('');
   lines.push('1. translation: Chinese translation of the error message, wrap English terms with {{keyword}} markers');
   lines.push('2. keywords: Chinese-English term mapping table');
-  lines.push('3. analysis: Root cause analysis in Chinese, MUST reference specific file:line numbers');
+  lines.push('3. analysis: Root cause analysis in Chinese, MUST reference specific file:line numbers from the Source Context or Parsed Error Data');
   lines.push('4. fixSuggestion: Fix suggestion in Chinese, text description only, no code');
   if (category === 'UNKNOWN') {
     lines.push('5. category: Your best guess for the error category');
   }
   lines.push('');
   lines.push('Return JSON only.');
+  lines.push('');
+  lines.push('IMPORTANT: Base your analysis primarily on the traceback above. If the Parsed Error Data is incomplete, use the full Original Traceback.');
 
   return lines.join('\n');
 }
