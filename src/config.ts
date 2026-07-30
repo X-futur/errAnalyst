@@ -41,6 +41,7 @@ export interface KeywordPair {
 
 export class Config {
   private static instance: Config;
+  private secrets?: vscode.SecretStorage;
 
   static getInstance(): Config {
     if (!Config.instance) {
@@ -49,18 +50,58 @@ export class Config {
     return Config.instance;
   }
 
+  init(secrets: vscode.SecretStorage): void {
+    this.secrets = secrets;
+  }
+
   getProviders(): LlmProviderConfig[] {
     const config = vscode.workspace.getConfiguration('errAnalyst');
     const providers = config.get<LlmProviderConfig[]>('providers', []);
-    console.log('ErrAnalyst: raw providers =', JSON.stringify(providers));
     return providers;
   }
 
-  getActiveProvider(): LlmProviderConfig | undefined {
+  async getActiveProvider(): Promise<LlmProviderConfig | undefined> {
     const providers = this.getProviders();
     const activeName = vscode.workspace.getConfiguration('errAnalyst')
       .get<string>('activeProvider', '');
-    return providers.find(p => p.name === activeName && p.enabled && p.apiKey);
+    for (const p of providers) {
+      if (p.name === activeName && p.enabled) {
+        const apiKey = await this.secrets?.get(`errAnalyst:apiKey:${p.name}`);
+        if (apiKey) {
+          return { ...p, apiKey };
+        }
+      }
+    }
+    return undefined;
+  }
+
+  async saveProviderConfig(
+    provider: { name: string; baseUrl: string; model: string },
+    apiKey: string,
+    prefs: { autoAnalyze: boolean; enableCache: boolean }
+  ): Promise<void> {
+    const config = vscode.workspace.getConfiguration('errAnalyst');
+    if (this.secrets) {
+      await this.secrets.store(`errAnalyst:apiKey:${provider.name}`, apiKey);
+    }
+    let providers = config.get<LlmProviderConfig[]>('providers', []);
+    const existingIdx = providers.findIndex(p => p.name === provider.name);
+    const entry: LlmProviderConfig = {
+      name: provider.name,
+      baseUrl: provider.baseUrl,
+      model: provider.model,
+      apiKey: '',
+      enabled: true,
+    };
+    if (existingIdx >= 0) {
+      providers[existingIdx] = { ...providers[existingIdx], ...entry };
+    } else {
+      providers.push(entry);
+    }
+    await config.update('providers', providers, vscode.ConfigurationTarget.Global);
+    await config.update('activeProvider', provider.name, vscode.ConfigurationTarget.Global);
+    await config.update('autoAnalyze', prefs.autoAnalyze, vscode.ConfigurationTarget.Global);
+    await config.update('enableCache', prefs.enableCache, vscode.ConfigurationTarget.Global);
   }
 
   getAutoAnalyze(): boolean {

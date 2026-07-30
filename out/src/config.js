@@ -42,17 +42,52 @@ class Config {
         }
         return Config.instance;
     }
+    init(secrets) {
+        this.secrets = secrets;
+    }
     getProviders() {
         const config = vscode.workspace.getConfiguration('errAnalyst');
         const providers = config.get('providers', []);
-        console.log('ErrAnalyst: raw providers =', JSON.stringify(providers));
         return providers;
     }
-    getActiveProvider() {
+    async getActiveProvider() {
         const providers = this.getProviders();
         const activeName = vscode.workspace.getConfiguration('errAnalyst')
             .get('activeProvider', '');
-        return providers.find(p => p.name === activeName && p.enabled && p.apiKey);
+        for (const p of providers) {
+            if (p.name === activeName && p.enabled) {
+                const apiKey = await this.secrets?.get(`errAnalyst:apiKey:${p.name}`);
+                if (apiKey) {
+                    return { ...p, apiKey };
+                }
+            }
+        }
+        return undefined;
+    }
+    async saveProviderConfig(provider, apiKey, prefs) {
+        const config = vscode.workspace.getConfiguration('errAnalyst');
+        if (this.secrets) {
+            await this.secrets.store(`errAnalyst:apiKey:${provider.name}`, apiKey);
+        }
+        let providers = config.get('providers', []);
+        const existingIdx = providers.findIndex(p => p.name === provider.name);
+        const entry = {
+            name: provider.name,
+            baseUrl: provider.baseUrl,
+            model: provider.model,
+            apiKey: '',
+            enabled: true,
+        };
+        if (existingIdx >= 0) {
+            providers[existingIdx] = { ...providers[existingIdx], ...entry };
+        }
+        else {
+            providers.push(entry);
+        }
+        await config.update('providers', providers, vscode.ConfigurationTarget.Global);
+        await config.update('activeProvider', provider.name, vscode.ConfigurationTarget.Global);
+        await config.update('autoAnalyze', prefs.autoAnalyze, vscode.ConfigurationTarget.Global);
+        await config.update('enableCache', prefs.enableCache, vscode.ConfigurationTarget.Global);
     }
     getAutoAnalyze() {
         return vscode.workspace.getConfiguration('errAnalyst')

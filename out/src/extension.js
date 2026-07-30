@@ -47,6 +47,7 @@ const analysisWebview_1 = require("./ui/analysisWebview");
 const hoverProvider_1 = require("./ui/hoverProvider");
 const errorHistoryView_1 = require("./ui/errorHistoryView");
 const llmProvider_1 = require("./llmProvider");
+const configWizard_1 = require("./ui/configWizard");
 let terminalWatcher;
 let hoverProvider;
 let analysisWebview;
@@ -55,9 +56,12 @@ let categoryClassifier;
 let contextBuilder;
 let errorHistoryViewProvider;
 let lastError = null;
+let configWizard;
 function activate(context) {
     console.log("ErrAnalyst: extension activated, vscode version:", vscode.version);
     console.log("ErrAnalyst: shellIntegration =", !!vscode.window.terminals?.[0]?.shellIntegration);
+    // Init Config with SecretStorage
+    config_1.Config.getInstance().init(context.secrets);
     // ── Init modules ──
     errorMemory = new errorMemory_1.ErrorMemory();
     errorMemory.init();
@@ -94,6 +98,30 @@ function activate(context) {
         errorHistoryViewProvider.refresh();
     });
     terminalWatcher.activate();
+    // ── Config wizard ──
+    configWizard = new configWizard_1.ConfigWizard();
+    context.subscriptions.push(vscode.commands.registerCommand('errAnalyst.showConfig', async () => {
+        const config = config_1.Config.getInstance();
+        const existingConfig = {
+            activeProvider: vscode.workspace.getConfiguration('errAnalyst').get('activeProvider', '') || null,
+            providers: config.getProviders(),
+            autoAnalyze: config.getAutoAnalyze(),
+            enableCache: config.getEnableCache(),
+        };
+        // Fetch existing API key from secrets (masked)
+        let existingApiKey = '';
+        if (existingConfig.activeProvider) {
+            existingApiKey = await context.secrets.get(`errAnalyst:apiKey:${existingConfig.activeProvider}`) || '';
+        }
+        configWizard.show({ ...existingConfig, apiKey: existingApiKey });
+    }));
+    // Auto-open wizard if no valid provider is configured
+    (async () => {
+        const provider = await config_1.Config.getInstance().getActiveProvider();
+        if (!provider) {
+            configWizard.show();
+        }
+    })();
     // ── Commands ──
     context.subscriptions.push(vscode.commands.registerCommand('errAnalyst.focusPanel', () => {
         analysisWebview.focus();
@@ -151,8 +179,8 @@ async function autoAnalyze(result, category) {
     // ── Check cache ──
     // [缓存已禁用]
     // ── Build AI context ──
-    const provider = config.getActiveProvider();
-    console.log('ErrAnalyst: active provider =', JSON.stringify(provider));
+    const provider = await config.getActiveProvider();
+    console.log('ErrAnalyst: fetching active provider...');
     if (!provider) {
         vscode.window.showWarningMessage('ErrAnalyst: No AI provider configured. Configure API key in settings.');
         return;

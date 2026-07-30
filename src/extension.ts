@@ -11,6 +11,7 @@ import { ErrorHoverProvider } from './ui/hoverProvider';
 import { ErrorHistoryViewProvider } from './ui/errorHistoryView';
 import { createProvider, buildAnalysisPrompts, parseAiResponse } from './llmProvider';
 import type { ErrorAnalysisResult } from './config';
+import { ConfigWizard } from './ui/configWizard';
 
 let terminalWatcher: TerminalWatcher;
 let hoverProvider: ErrorHoverProvider;
@@ -20,10 +21,14 @@ let categoryClassifier: CategoryClassifier;
 let contextBuilder: ContextBuilder;
 let errorHistoryViewProvider: ErrorHistoryViewProvider;
 let lastError: ErrorAnalysisResult | null = null;
+let configWizard: ConfigWizard;
 
 export function activate(context: vscode.ExtensionContext) {
   console.log("ErrAnalyst: extension activated, vscode version:", vscode.version);
   console.log("ErrAnalyst: shellIntegration =", !!(vscode.window as any).terminals?.[0]?.shellIntegration);
+
+  // Init Config with SecretStorage
+  Config.getInstance().init(context.secrets);
 
   // ── Init modules ──
 
@@ -74,6 +79,34 @@ export function activate(context: vscode.ExtensionContext) {
     errorHistoryViewProvider.refresh();
   });
   terminalWatcher.activate();
+
+  // ── Config wizard ──
+  configWizard = new ConfigWizard();
+  context.subscriptions.push(
+    vscode.commands.registerCommand('errAnalyst.showConfig', async () => {
+      const config = Config.getInstance();
+      const existingConfig = {
+        activeProvider: vscode.workspace.getConfiguration('errAnalyst').get<string>('activeProvider', '') || null,
+        providers: config.getProviders(),
+        autoAnalyze: config.getAutoAnalyze(),
+        enableCache: config.getEnableCache(),
+      };
+      // Fetch existing API key from secrets (masked)
+      let existingApiKey = '';
+      if (existingConfig.activeProvider) {
+        existingApiKey = await context.secrets.get(`errAnalyst:apiKey:${existingConfig.activeProvider}`) || '';
+      }
+      configWizard.show({ ...existingConfig, apiKey: existingApiKey });
+    })
+  );
+
+  // Auto-open wizard if no valid provider is configured
+  (async () => {
+    const provider = await Config.getInstance().getActiveProvider();
+    if (!provider) {
+      configWizard.show();
+    }
+  })();
 
   // ── Commands ──
 
@@ -147,8 +180,8 @@ async function autoAnalyze(result: ErrorAnalysisResult, category: string): Promi
   // [缓存已禁用]
 
   // ── Build AI context ──
-  const provider = config.getActiveProvider();
-  console.log('ErrAnalyst: active provider =', JSON.stringify(provider));
+  const provider = await config.getActiveProvider();
+  console.log('ErrAnalyst: fetching active provider...');
   if (!provider) {
     vscode.window.showWarningMessage(
       'ErrAnalyst: No AI provider configured. Configure API key in settings.'
