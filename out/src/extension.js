@@ -48,6 +48,7 @@ const hoverProvider_1 = require("./ui/hoverProvider");
 const errorHistoryView_1 = require("./ui/errorHistoryView");
 const llmProvider_1 = require("./llmProvider");
 const configWizard_1 = require("./ui/configWizard");
+const configManager_1 = require("./configManager");
 let terminalWatcher;
 let hoverProvider;
 let analysisWebview;
@@ -57,6 +58,7 @@ let contextBuilder;
 let errorHistoryViewProvider;
 let lastError = null;
 let configWizard;
+let configManager;
 function activate(context) {
     console.log("ErrAnalyst: extension activated, vscode version:", vscode.version);
     console.log("ErrAnalyst: shellIntegration =", !!vscode.window.terminals?.[0]?.shellIntegration);
@@ -100,6 +102,8 @@ function activate(context) {
     terminalWatcher.activate();
     // ── Config wizard ──
     configWizard = new configWizard_1.ConfigWizard();
+    // ── Config manager (CLI-style commands) ──
+    configManager = new configManager_1.ConfigManager(context.secrets);
     context.subscriptions.push(vscode.commands.registerCommand('errAnalyst.showConfig', async () => {
         const config = config_1.Config.getInstance();
         const existingConfig = {
@@ -158,6 +162,10 @@ function activate(context) {
         errorMemory.clear();
         vscode.window.showInformationMessage('ErrAnalyst: Cache cleared');
     }));
+    context.subscriptions.push(vscode.commands.registerCommand('errAnalyst.setProvider', () => configManager.setProvider()));
+    context.subscriptions.push(vscode.commands.registerCommand('errAnalyst.setActiveProvider', () => configManager.setActiveProvider()));
+    context.subscriptions.push(vscode.commands.registerCommand('errAnalyst.showConfig', () => configManager.showConfig()));
+    context.subscriptions.push(vscode.commands.registerCommand('errAnalyst.setModel', () => configManager.setModel()));
     // ── Status bar ──
     const statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     statusItem.text = '$(error) ErrAnalyst';
@@ -170,6 +178,7 @@ function deactivate() {
     terminalWatcher?.deactivate();
     analysisWebview?.close();
     hoverProvider?.clearHover();
+    configManager?.dispose();
 }
 // 自动分析主流程
 // 获取上下文 -> 构建 Prompt -> 请求 LLM -> 解析响应 -> 刷新 UI 并写入缓存

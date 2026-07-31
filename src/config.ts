@@ -1,4 +1,7 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import type { StackFrame, ChainEntry } from './parser';
 
 export interface LlmProviderConfig {
@@ -70,6 +73,16 @@ export class Config {
         if (apiKey) {
           return { ...p, apiKey };
         }
+        // Fallback to credentials.json for CLI-set keys
+        try {
+          const credFile = path.join(os.homedir(), '.errAnalyst', 'credentials.json');
+          if (fs.existsSync(credFile)) {
+            const creds = JSON.parse(fs.readFileSync(credFile, 'utf-8'));
+            if (creds[p.name]) {
+              return { ...p, apiKey: creds[p.name] };
+            }
+          }
+        } catch {}
       }
     }
     return undefined;
@@ -102,6 +115,21 @@ export class Config {
     await config.update('activeProvider', provider.name, vscode.ConfigurationTarget.Global);
     await config.update('autoAnalyze', prefs.autoAnalyze, vscode.ConfigurationTarget.Global);
     await config.update('enableCache', prefs.enableCache, vscode.ConfigurationTarget.Global);
+
+    // Sync API key to ~/.errAnalyst/credentials.json for CLI access
+    try {
+      const credDir = path.join(os.homedir(), '.errAnalyst');
+      const credFile = path.join(credDir, 'credentials.json');
+      if (!fs.existsSync(credDir)) fs.mkdirSync(credDir, { recursive: true });
+      let creds: Record<string, string> = {};
+      if (fs.existsSync(credFile)) {
+        creds = JSON.parse(fs.readFileSync(credFile, 'utf-8'));
+      }
+      creds[provider.name] = apiKey;
+      fs.writeFileSync(credFile, JSON.stringify(creds, null, 2));
+    } catch (e) {
+      console.error('ErrAnalyst: Failed to write credentials file for CLI:', e);
+    }
   }
 
   getAutoAnalyze(): boolean {

@@ -12,6 +12,7 @@ import { ErrorHistoryViewProvider } from './ui/errorHistoryView';
 import { createProvider, buildAnalysisPrompts, parseAiResponse } from './llmProvider';
 import type { ErrorAnalysisResult } from './config';
 import { ConfigWizard } from './ui/configWizard';
+import { ConfigManager } from './configManager';
 
 let terminalWatcher: TerminalWatcher;
 let hoverProvider: ErrorHoverProvider;
@@ -22,6 +23,7 @@ let contextBuilder: ContextBuilder;
 let errorHistoryViewProvider: ErrorHistoryViewProvider;
 let lastError: ErrorAnalysisResult | null = null;
 let configWizard: ConfigWizard;
+let configManager: ConfigManager;
 
 export function activate(context: vscode.ExtensionContext) {
   console.log("ErrAnalyst: extension activated, vscode version:", vscode.version);
@@ -82,6 +84,9 @@ export function activate(context: vscode.ExtensionContext) {
 
   // ── Config wizard ──
   configWizard = new ConfigWizard();
+  // ── Config manager (CLI-style commands) ──
+  configManager = new ConfigManager(context.secrets);
+
   context.subscriptions.push(
     vscode.commands.registerCommand('errAnalyst.showConfig', async () => {
       const config = Config.getInstance();
@@ -154,6 +159,19 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  context.subscriptions.push(
+    vscode.commands.registerCommand('errAnalyst.setProvider', () => configManager.setProvider())
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('errAnalyst.setActiveProvider', () => configManager.setActiveProvider())
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('errAnalyst.showConfig', () => configManager.showConfig())
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('errAnalyst.setModel', () => configManager.setModel())
+  );
+
   // ── Status bar ──
 
   const statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -168,6 +186,7 @@ export function deactivate() {
   terminalWatcher?.deactivate();
   analysisWebview?.close();
   hoverProvider?.clearHover();
+  configManager?.dispose();
 }
 
 // 自动分析主流程

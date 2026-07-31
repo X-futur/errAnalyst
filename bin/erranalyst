@@ -1,0 +1,300 @@
+#!/usr/bin/env node
+
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+const { execSync } = require('child_process');
+
+// ── Paths ──
+const VSCODE_SETTINGS = path.join(os.homedir(), 'Library/Application Support/Code/User/settings.json');
+const CURSOR_SETTINGS = path.join(os.homedir(), 'Library/Application Support/Cursor/User/settings.json');
+const KEYCHAIN_SERVICE = 'erranalyst';
+const HOME = os.homedir();
+const ERR_DIR = path.join(HOME, '.errAnalyst');
+const CREDENTIALS_FILE = path.join(ERR_DIR, "credentials.json");
+const API_KEY_PREFIX = 'errAnalyst:apiKey:';
+
+
+function findSettingsFile() {
+  for (const p of [VSCODE_SETTINGS, CURSOR_SETTINGS]) {
+    if (fs.existsSync(p)) return p;
+  }
+  return VSCODE_SETTINGS;
+}
+
+function readSettings() {
+  const p = findSettingsFile();
+  if (!fs.existsSync(p)) {
+    console.error(`Error: settings.json not found at ${p}`);
+    process.exit(1);
+  }
+  return JSON.parse(fs.readFileSync(p, 'utf-8'));
+}
+
+function writeSettings(data) {
+  const p = findSettingsFile();
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+}
+
+// ── Keychain helpers (macOS `security` command) ──
+
+function keychainGet(account) {
+  try {
+    return execSync(
+      `security find-generic-password -a "${account}" -s "${KEYCHAIN_SERVICE}" -w 2>/dev/null`,
+      { timeout: 3000 }
+    ).toString().trim() || null;
+  } catch { return null; }
+}
+
+function keychainSet(account, password) {
+  try {
+    execSync(`security delete-generic-password -a "${account}" -s "${KEYCHAIN_SERVICE}" 2>/dev/null`, { timeout: 3000 });
+  } catch {}
+  execSync(
+    `security add-generic-password -a "${account}" -s "${KEYCHAIN_SERVICE}" -w "${password}" -U 2>/dev/null`,
+    { timeout: 3000 }
+  );
+}
+
+function keychainDelete(account) {
+  try {
+    execSync(`security delete-generic-password -a "${account}" -s "${KEYCHAIN_SERVICE}" 2>/dev/null`, { timeout: 3000 });
+  } catch {}
+}
+
+// ── Preset providers ──
+
+const PRESETS = {
+  'DeepSeek':       { baseUrl: 'https://api.deepseek.com/v1',                         model: 'deepseek-v4-pro' },
+  'Kimi (Moonshot)':{ baseUrl: 'https://api.moonshot.cn/v1',                          model: 'moonshot-v1-8k'  },
+  'Qwen (通义千问)': { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',   model: 'qwen-turbo'      },
+};
+
+// ── Helpers ──
+
+function maskKey(key) {
+  if (!key) return '(not set)';
+  if (key.length <= 8) return key.slice(0, 2) + '****';
+  return key.slice(0, 4) + '****' + key.slice(-4);
+}
+
+// ── Read API key: credentials file first, then keychain ──
+function getApiKey(providerOrKey) {
+  const providerName = String(providerOrKey).startsWith(API_KEY_PREFIX)
+    ? String(providerOrKey).slice(API_KEY_PREFIX.length)
+    : String(providerOrKey);
+
+  if (fs.existsSync(CREDENTIALS_FILE)) {
+    try {
+      const creds = JSON.parse(fs.readFileSync(CREDENTIALS_FILE, "utf-8"));
+      if (creds[providerName]) return creds[providerName];
+    } catch {}
+  }
+  return keychainGet(API_KEY_PREFIX + providerName);
+}
+
+
+// ── Commands ──
+
+function cmdConfigShow() {
+  const raw = readSettings();
+  const providers = raw['errAnalyst.providers'] || [];
+  const activeProvider = raw['errAnalyst.activeProvider'] || '(none)';
+  const autoAnalyze = raw['errAnalyst.autoAnalyze'] !== false;
+  const enableCache = raw['errAnalyst.enableCache'] !== false;
+  const aiTimeout = raw['errAnalyst.aiTimeout'] || 15000;
+
+  const output = {
+    activeProvider,
+    autoAnalyze,
+    enableCache,
+    aiTimeout,
+    totalProviders: providers.length,
+    providers: providers.map(p => ({
+      name: p.name,
+      baseUrl: p.baseUrl,
+      model: p.model,
+      apiKey: getApiKey(`errAnalyst:apiKey:${p.name}`) ? 'configured' : 'empty',
+      enabled: p.enabled,
+      isActive: p.name === activeProvider,
+    })),
+  };
+
+  console.log(JSON.stringify(output, null, 2));
+}
+
+async function cmdProviderSet() {
+  const raw = readSettings();
+  let providers = raw['errAnalyst.providers'] || [];
+
+  // Collect available options
+  const existingNames = providers.map(p => p.name);
+  const options = [
+    ...providers.map(p => ({ name: p.name, label: `${p.name} (current: ${p.model})`, isNew: false })),
+    ...Object.keys(PRESETS).filter(n => !existingNames.includes(n)).map(n => ({ name: n, label: `${n} — ${PRESETS[n].baseUrl}`, isNew: true })),
+    { name: '__custom__', label: 'Custom (enter manually)', isNew: true },
+  ];
+
+  // Quick pick using readline
+  console.log('\nAvailable providers:');
+  options.forEach((o, i) => console.log(`  ${i + 1}. ${o.label}`));
+  process.stdout.write('\nSelect number: ');
+
+  // Simple input
+  const readline = require('readline').createInterface({ input: process.stdin, output: process.stdout });
+
+  const ask = (q) => new Promise(r => readline.question(q, r));
+
+  const selIdx = parseInt(await ask(''), 10) - 1;
+  if (isNaN(selIdx) || selIdx < 0 || selIdx >= options.length) {
+    console.log('Invalid selection'); readline.close(); return;
+  }
+
+  const selected = options[selIdx];
+  let name = selected.name;
+  let baseUrl = '';
+  let model = '';
+
+  if (name === '__custom__') {
+    name = await ask('Provider name: ');
+    if (!name) { console.log('Cancelled'); readline.close(); return; }
+    baseUrl = await ask('Base URL: ');
+    if (!baseUrl) { console.log('Cancelled'); readline.close(); return; }
+    model = await ask('Model: ');
+    if (!model) { console.log('Cancelled'); readline.close(); return; }
+  } else {
+    baseUrl = PRESETS[name]?.baseUrl || '';
+    model = PRESETS[name]?.model || '';
+    const existing = providers.find(p => p.name === name);
+    if (existing) {
+      baseUrl = existing.baseUrl;
+      model = existing.model;
+    }
+  }
+
+  // API key
+  const existingKey = getApiKey(name);
+  const keyPrompt = existingKey ? `API Key (leave empty to keep existing): ` : `API Key: `;
+  const apiKey = (await ask(keyPrompt)).trim();
+  const finalKey = apiKey || existingKey || '';
+  if (!finalKey) { console.log('API Key is required'); readline.close(); return; }
+
+  // Model (for existing providers)
+  if (!selected.isNew) {
+    const m = (await ask(`Model (leave empty to keep "${model}"): `)).trim();
+    if (m) model = m;
+  }
+
+  // Save to settings.json
+  const entry = { name, baseUrl, model, apiKey: '', enabled: true };
+  const idx = providers.findIndex(p => p.name === name);
+  if (idx >= 0) providers[idx] = { ...providers[idx], ...entry };
+  else providers.push(entry);
+
+  raw['errAnalyst.providers'] = providers;
+  raw['errAnalyst.activeProvider'] = name;
+  writeSettings(raw);
+
+  // Save API key to keychain
+  keychainSet(API_KEY_PREFIX + name, finalKey);
+  // Also write to credentials file for CLI config show
+  try {
+    const dir = require("path").dirname(CREDENTIALS_FILE);
+    if (!require("fs").existsSync(dir)) require("fs").mkdirSync(dir, { recursive: true });
+    let creds = {};
+    if (require("fs").existsSync(CREDENTIALS_FILE)) {
+      creds = JSON.parse(require("fs").readFileSync(CREDENTIALS_FILE, "utf-8"));
+    }
+    creds[name] = finalKey;
+    require("fs").writeFileSync(CREDENTIALS_FILE, JSON.stringify(creds, null, 2));
+  } catch {}
+
+  console.log(`\n✓ Provider "${name}" configured (model: ${model})`);
+  readline.close();
+}
+
+function cmdProviderSwitch() {
+  const raw = readSettings();
+  const providers = raw['errAnalyst.providers'] || [];
+  if (providers.length === 0) {
+    console.log('No providers configured. Use "erranalyst provider set" first.');
+    return;
+  }
+
+  const current = raw['errAnalyst.activeProvider'] || '';
+  console.log('\nConfigured providers:');
+  providers.forEach((p, i) => console.log(`  ${i + 1}. ${p.name} ${p.name === current ? '(active)' : ''}`));
+  process.stdout.write('\nSelect number: ');
+
+  const readline = require('readline').createInterface({ input: process.stdin, output: process.stdout });
+  readline.question('', (answer) => {
+    const idx = parseInt(answer, 10) - 1;
+    if (isNaN(idx) || idx < 0 || idx >= providers.length) {
+      console.log('Invalid selection');
+    } else {
+      raw['errAnalyst.activeProvider'] = providers[idx].name;
+      writeSettings(raw);
+      console.log(`\n✓ Switched to provider: ${providers[idx].name}`);
+    }
+    readline.close();
+  });
+}
+
+async function cmdModelSet() {
+  const raw = readSettings();
+  const providers = raw['errAnalyst.providers'] || [];
+  if (providers.length === 0) {
+    console.log('No providers configured.');
+    return;
+  }
+
+  console.log('\nSelect provider:');
+  providers.forEach((p, i) => console.log(`  ${i + 1}. ${p.name} (current: ${p.model})`));
+  process.stdout.write('\nSelect number: ');
+
+  const readline = require('readline').createInterface({ input: process.stdin, output: process.stdout });
+  const ask = (q) => new Promise(r => readline.question(q, r));
+
+  const idx = parseInt(await ask(''), 10) - 1;
+  if (isNaN(idx) || idx < 0 || idx >= providers.length) {
+    console.log('Invalid selection'); readline.close(); return;
+  }
+
+  const model = (await ask(`New model for ${providers[idx].name}: `)).trim();
+  if (!model) { console.log('Cancelled'); readline.close(); return; }
+
+  providers[idx].model = model;
+  raw['errAnalyst.providers'] = providers;
+  writeSettings(raw);
+  console.log(`\n✓ Model updated: ${providers[idx].name} → ${model}`);
+  readline.close();
+}
+
+function cmdHelp() {
+  console.log(`
+Usage: erranalyst <command> [args]
+
+Commands:
+  config show          Show current configuration as JSON
+  provider set         Interactive setup of an AI provider
+  provider switch      Switch active provider
+  model set            Change model for a provider
+  help                 Show this help
+`);
+}
+
+// ── Main ──
+
+const args = process.argv.slice(2);
+
+if (args.length === 0) { cmdHelp(); process.exit(0); }
+
+switch (args.join(' ')) {
+  case 'config show':     cmdConfigShow();      break;
+  case 'provider set':    cmdProviderSet();      break;
+  case 'provider switch': cmdProviderSwitch();   break;
+  case 'model set':       cmdModelSet();         break;
+  default:                cmdHelp();             break;
+}
