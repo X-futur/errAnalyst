@@ -25,7 +25,7 @@
   "activationEvents": [
     "onStartupFinished"
   ],
- "main": "./out/src/extension.js",
+  "main": "./out/src/extension.js",
   "bin": {
     "erranalyst": "./bin/erranalyst"
   },
@@ -42,6 +42,10 @@
       {
         "command": "errAnalyst.clearCache",
         "title": "erranalyst cache clear"
+      },
+      {
+        "command": "errAnalyst.cacheShow",
+        "title": "erranalyst cache show"
       },
       {
         "command": "errAnalyst.setProvider",
@@ -74,7 +78,7 @@
         {
           "type": "webview",
           "id": "errAnalyst.errorHistory",
-          "name": "错误历史"
+          "name": "错误分析"
         }
       ]
     },
@@ -153,8 +157,9 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
+    "sync:commands": "node scripts/sync-commands.js",
+    "compile": "npm run sync:commands && tsc -p ./",
+    "watch": "npm run sync:commands && tsc -watch -p ./",
     "test": "node ./out/test/runTest.js"
   },
   "devDependencies": {

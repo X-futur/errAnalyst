@@ -13,6 +13,8 @@ const HOME = os.homedir();
 const ERR_DIR = path.join(HOME, '.errAnalyst');
 const CREDENTIALS_FILE = path.join(ERR_DIR, "credentials.json");
 const API_KEY_PREFIX = 'errAnalyst:apiKey:';
+const errStore = require('../src/shared/err-store');
+const COMMANDS = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'commands.json'), 'utf-8'));
 
 
 function findSettingsFile() {
@@ -272,29 +274,102 @@ async function cmdModelSet() {
   readline.close();
 }
 
-function cmdHelp() {
-  console.log(`
-Usage: erranalyst <command> [args]
+async function cmdCacheShow() {
+  const entries = errStore.readCache();
+  if (entries.length === 0) {
+    console.log('Local analysis cache is empty.');
+    return;
+  }
 
-Commands:
-  config show          Show current configuration as JSON
-  provider set         Interactive setup of an AI provider
-  provider switch      Switch active provider
-  model set            Change model for a provider
-  help                 Show this help
-`);
+  console.log('\nLocal analysis cache:');
+  entries.forEach((e, i) => {
+    const time = new Date(e.lastSeen).toLocaleString('zh-CN');
+    console.log(`  ${i + 1}. ${e.errorType} - ${(e.errorMessage || '').slice(0, 80)} (${time} · ${e.count} times)`);
+  });
+
+  const readline = require('readline').createInterface({ input: process.stdin, output: process.stdout });
+  const ask = (q) => new Promise(r => readline.question(q, r));
+  const answer = (await ask('\nSelect a number to view full analysis (Enter to skip): ')).trim();
+  readline.close();
+
+  const idx = parseInt(answer, 10) - 1;
+  if (isNaN(idx) || idx < 0 || idx >= entries.length) return;
+
+  const e = entries[idx];
+  console.log('\n' + '='.repeat(60));
+  console.log(`Error: ${e.errorType}`);
+  console.log(`Message: ${e.errorMessage}`);
+  console.log(`First seen: ${new Date(e.firstSeen).toLocaleString('zh-CN')}`);
+  console.log(`Last seen: ${new Date(e.lastSeen).toLocaleString('zh-CN')}`);
+  console.log(`Count: ${e.count}`);
+  console.log('\nTranslation:');
+  console.log(e.translation || '(none)');
+  console.log('\nAnalysis:');
+  console.log(e.analysis || '(none)');
+  console.log('\nFix suggestion:');
+  console.log(e.fixSuggestion || '(none)');
+  if (e.fullTraceback) {
+    console.log('\nTraceback:');
+    console.log(e.fullTraceback.slice(0, 3000));
+  }
+  console.log('='.repeat(60));
 }
+
+function cmdHelp() {
+  const cliCommands = COMMANDS
+    .filter(c => c.cli)
+    .sort((a, b) => a.cli.localeCompare(b.cli));
+  const vscodeCommands = COMMANDS
+    .filter(c => c.vscodeId)
+    .sort((a, b) => a.title.localeCompare(b.title));
+
+  const lines = [];
+  lines.push('');
+  lines.push('Usage: erranalyst <command> [args]');
+  lines.push('');
+  lines.push('CLI Commands:');
+  for (const c of cliCommands) {
+    lines.push('  ' + c.cli.padEnd(18) + c.description);
+  }
+  lines.push('');
+  lines.push('VS Code Commands (run in Command Palette):');
+  for (const c of vscodeCommands) {
+    lines.push('  ' + c.title.padEnd(32) + c.description);
+  }
+  lines.push('');
+  console.log(lines.join('\n'));
+}
+
+const CLI_HANDLERS = {
+  'config show': cmdConfigShow,
+  'cache show': cmdCacheShow,
+  'provider set': cmdProviderSet,
+  'provider switch': cmdProviderSwitch,
+  'model set': cmdModelSet,
+  'help': cmdHelp,
+};
 
 // ── Main ──
 
 const args = process.argv.slice(2);
 
-if (args.length === 0) { cmdHelp(); process.exit(0); }
+if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
+  cmdHelp();
+  process.exit(0);
+}
 
-switch (args.join(' ')) {
-  case 'config show':     cmdConfigShow();      break;
-  case 'provider set':    cmdProviderSet();      break;
-  case 'provider switch': cmdProviderSwitch();   break;
-  case 'model set':       cmdModelSet();         break;
-  default:                cmdHelp();             break;
+const command = args.join(' ');
+const handler = CLI_HANDLERS[command];
+
+if (handler) {
+  const result = handler();
+  if (result && typeof result.catch === 'function') {
+    result.catch((e) => {
+      console.error(e);
+      process.exit(1);
+    });
+  }
+} else {
+  console.log('Unknown command: ' + command);
+  cmdHelp();
 }

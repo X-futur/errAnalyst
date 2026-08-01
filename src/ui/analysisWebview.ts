@@ -2,46 +2,68 @@ import * as vscode from 'vscode';
 import { ErrorAnalysisResult } from '../config';
 import type { BuiltContext, FileContext } from '../context/contextBuilder';
 
-export class AnalysisWebview {
-  private panel: vscode.WebviewPanel | null = null;
+type AiAnalysisViewData = {
+  translation: string;
+  keywords: Array<{ cn: string; en: string }>;
+  analysis: string;
+  fixSuggestion: string;
+};
+
+interface ShowOptions {
+  fromCache?: boolean;
+  cachedAt?: number;
+}
+
+export class AnalysisViewProvider implements vscode.WebviewViewProvider {
+  public static readonly viewType = 'errAnalyst.errorHistory';
+  private view?: vscode.WebviewView;
   private currentError: ErrorAnalysisResult | null = null;
-  private currentAiData: {
-    translation: string;
-    keywords: Array<{ cn: string; en: string }>;
-    analysis: string;
-    fixSuggestion: string;
-  } | null = null;
+  private currentAiData: AiAnalysisViewData | null = null;
   private currentContext: BuiltContext | null = null;
   private currentTraceback: string = "";
+  private fromCache = false;
+  private cachedAt = 0;
+  private aiError: string | null = null;
 
-  show(error: ErrorAnalysisResult, aiData?: {
-    translation: string;
-    keywords: Array<{ cn: string; en: string }>;
-    analysis: string;
-    fixSuggestion: string;
-  }): void {
-    this.currentError = error;
-    if (aiData) this.currentAiData = aiData;
-    if (!this.panel) {
-      this.panel = vscode.window.createWebviewPanel(
-        'errAnalyst.analysis',
-        'ErrAnalyst - 错误分析',
-        vscode.ViewColumn.Beside,
-        { enableScripts: true, retainContextWhenHidden: true }
-      );
-      this.panel.onDidDispose(() => { this.panel = null; });
-      this.panel.webview.onDidReceiveMessage(msg => this.handleWebviewMessage(msg));
-    }
-    this.panel.reveal(vscode.ViewColumn.Beside, true);
+  constructor(
+    private readonly extensionUri: vscode.Uri,
+    private readonly onReanalyze: (error: ErrorAnalysisResult) => void,
+  ) {}
+
+  resolveWebviewView(
+    webviewView: vscode.WebviewView,
+    _context: vscode.WebviewViewResolveContext,
+    _token: vscode.CancellationToken,
+  ): void {
+    this.view = webviewView;
+    webviewView.webview.options = { enableScripts: true };
+    webviewView.webview.onDidReceiveMessage(msg => this.handleWebviewMessage(msg));
     this.updateContent();
   }
 
-  close(): void {
-    if (this.panel) { this.panel.dispose(); this.panel = null; }
+  show(error: ErrorAnalysisResult, aiData?: AiAnalysisViewData, options?: ShowOptions): void {
+    this.currentError = error;
+    this.currentAiData = aiData || null;
+    this.fromCache = options?.fromCache || false;
+    this.cachedAt = options?.cachedAt || 0;
+    this.aiError = null;
+    if (this.view) {
+      this.view.show(true);
+      this.updateContent();
+    } else {
+      void this.focus();
+    }
   }
 
   focus(): void {
-    if (this.panel) this.panel.reveal(vscode.ViewColumn.Beside, true);
+    void vscode.commands.executeCommand(`${AnalysisViewProvider.viewType}.focus`)
+      .then(() => this.updateContent());
+  }
+
+  showAiError(message: string): void {
+    this.aiError = message;
+    this.currentAiData = null;
+    this.updateContent();
   }
 
   /** Show full traceback and code context (sent from extension after AI returns) */
@@ -55,6 +77,11 @@ export class AnalysisWebview {
     switch (msg.type) {
       case 'openFile':
         this.openFileAtLine(msg.file, msg.line);
+        break;
+      case 'reanalyze':
+        if (this.currentError) {
+          this.onReanalyze(this.currentError);
+        }
         break;
     }
   }
@@ -91,7 +118,7 @@ export class AnalysisWebview {
   }
 
   private updateContent(): void {
-    if (!this.panel || !this.currentError) return;
+    if (!this.view || !this.currentError) return;
     const error = this.currentError;
     const aiData = this.currentAiData;
 
@@ -101,7 +128,7 @@ export class AnalysisWebview {
     const analysisHtml = this.buildAnalysisHtml();
     const terminalHtml = this.buildTerminalHtml();
 
-    this.panel.webview.html = this.getHtmlTemplate(
+    this.view.webview.html = this.getHtmlTemplate(
       error, categoryHtml, codeContextHtml, stackHtml, analysisHtml, terminalHtml
     );
   }
@@ -132,49 +159,37 @@ export class AnalysisWebview {
     let html = '<div class="code-context-section">';
     html += '<h4>源代码上下文</h4>';
 
-    // Analysis-referenced files should be expanded.
-    // We detect which files are referenced in the analysis text.
-    const referencedFiles = this.extractReferencedFiles();
+    const hasFiles = ctx.mainFile
+      || ctx.stackFiles.length > 0
+      || ctx.configFiles.length > 0
+      || ctx.siblingFiles.length > 0;
+    if (!hasFiles) {
+      html += '<div class="context-empty">未找到可重建的代码上下文，文件可能已变化</div>';
+      html += '</div>';
+      return html;
+    }
 
     if (ctx.mainFile) {
-      const isReferenced = referencedFiles.some(r => ctx.mainFile && ctx.mainFile.path.endsWith(r.file));
-      html += this.renderFileContext(ctx.mainFile, true, isReferenced);
+      html += this.renderFileContext(ctx.mainFile, true);
     }
     for (const f of ctx.stackFiles) {
-      const isReferenced = referencedFiles.some(r => f.path.endsWith(r.file));
-      html += this.renderFileContext(f, false, isReferenced);
+      html += this.renderFileContext(f, false);
     }
     for (const f of ctx.configFiles) {
-      html += this.renderFileContext(f, false, false);
+      html += this.renderFileContext(f, false);
     }
     for (const f of ctx.siblingFiles) {
-      html += this.renderFileContext(f, false, false);
+      html += this.renderFileContext(f, false);
     }
     html += '</div>';
     return html;
   }
 
-  /**
-   * Extract (file, line) pairs from AI analysis text for auto-expand.
-   */
-  private extractReferencedFiles(): Array<{ file: string; line: number }> {
-    const analysis = this.currentAiData?.analysis || '';
-    const refs: Array<{ file: string; line: number }> = [];
-    // Match patterns like "service.py:25" or "/path/to/file.py:42"
-    const pattern = /([a-zA-Z0-9_./\\-]+\.py):(\d+)/g;
-    let match;
-    while ((match = pattern.exec(analysis)) !== null) {
-      const file = match[1].split('/').pop() || match[1];
-      refs.push({ file, line: parseInt(match[2], 10) });
-    }
-    return refs;
-  }
-
-  private renderFileContext(fc: FileContext, isMain: boolean, expanded: boolean): string {
+  private renderFileContext(fc: FileContext, isMain: boolean): string {
     const label = isMain ? '主要报错文件' : (fc.path.split('/').pop() || fc.path);
     const relPath = fc.path;
-    const display = expanded ? 'block' : 'none';
-    const toggleClass = expanded ? 'open' : '';
+    const display = 'none';
+    const toggleClass = '';
     return `<div class="file-context ${isMain ? 'main-file' : ''}">
       <div class="file-header" onclick="toggleFile(this)">
         <span class="file-toggle ${toggleClass}">▶</span>
@@ -227,6 +242,10 @@ export class AnalysisWebview {
     const error = this.currentError;
     if (!error) return '';
     const aiData = this.currentAiData;
+
+    if (this.aiError) {
+      return '<div class="analysis-error">' + this.esc(this.aiError) + '</div>';
+    }
 
     if (aiData) {
       let kwPills = '';
@@ -306,8 +325,12 @@ export class AnalysisWebview {
 <style>
 :root{--bg:#1e1e1e;--bg-card:#252526;--text:#d4d4d4;--text-muted:#808080;--accent:#007acc;--border:#3c3c3c;--success:#40c060;}
 *{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);padding:12px;font-size:13px;line-height:1.5;}
-h3{margin-bottom:8px;font-size:16px;}h4{font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;color:#999;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);padding:10px;font-size:12px;line-height:1.5;}
+h3{margin-bottom:8px;font-size:14px;}h4{font-size:11px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;color:#999;}
+.cache-badge{background:rgba(64,192,96,0.12);border:1px solid rgba(64,192,96,0.4);color:var(--success);padding:4px 8px;border-radius:4px;font-size:11px;margin-bottom:8px;}
+.toolbar{margin-bottom:10px;}
+.reanalyze-btn{background:var(--bg-card);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:4px 8px;font-size:11px;cursor:pointer;}
+.reanalyze-btn:hover{border-color:var(--accent);color:#fff;}
 .category-section{margin-bottom:10px;}
 .category-badge{padding:4px 10px;border-radius:4px;font-size:12px;font-weight:600;display:inline-block;margin-bottom:6px;}
 .code-context-section{margin-bottom:12px;}
@@ -329,8 +352,9 @@ h3{margin-bottom:8px;font-size:16px;}h4{font-size:12px;text-transform:uppercase;
 .frame-file{color:#569cd6;cursor:pointer;}.frame-file:hover{text-decoration:underline;}
 .frame-line{color:#b5cea8;}.frame-func{color:#dcdcaa;}
 .code-line{color:#ce9178;padding-left:16px;margin-top:2px;font-size:11px;}
-.error-pair{display:flex;gap:12px;margin-bottom:12px;}
+.error-pair{display:block;margin-bottom:12px;}
 .error-original,.error-translated{flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:10px;min-width:0;}
+.error-translated{margin-top:8px;}
 .error-text,.translated-text{font-family:Consolas,Monaco,monospace;font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word;}
 .error-type{color:#f48771;font-weight:bold;margin-bottom:4px;}
 .error-msg{color:#ce9178;}
@@ -350,20 +374,28 @@ h3{margin-bottom:8px;font-size:16px;}h4{font-size:12px;text-transform:uppercase;
 .terminal-header:hover{background:rgba(255,255,255,0.03);}
 .terminal-text{font-family:Consolas,Monaco,monospace;font-size:11px;line-height:1.5;color:#ce9178;max-height:200px;overflow-y:auto;white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,0.3);padding:8px;border-radius:4px;margin:0 4px 4px;}
 .analysis-loading{text-align:center;padding:40px;color:var(--text-muted);}
+.analysis-error{background:var(--bg-card);border:1px solid var(--error);border-radius:6px;padding:10px;font-size:12px;color:var(--error);}
+.context-empty{color:var(--text-muted);font-size:11px;padding:8px 0;}
 .spinner{width:24px;height:24px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 12px;}
 @keyframes spin{to{transform:rotate(360deg);}}
 </style>
 </head>
 <body>
 <h3>⚠ ${this.esc(error.errorType)}</h3>
+${this.fromCache ? `<div class="cache-badge">来自本地缓存 · ${new Date(this.cachedAt).toLocaleString('zh-CN')}</div>` : ''}
+<div class="toolbar"><button class="reanalyze-btn" onclick="reanalyze()">↻ 重新 AI 分析</button></div>
 ${categoryHtml}
-${codeContextHtml}
-${stackHtml}
 ${analysisHtml}
+${stackHtml}
+${codeContextHtml}
 ${terminalHtml}
 <script>
 (function(){
   const vscode = acquireVsCodeApi();
+
+  window.reanalyze = function() {
+    vscode.postMessage({ type: 'reanalyze' });
+  };
 
   // Toggle file context sections
   window.toggleFile = function(el) {

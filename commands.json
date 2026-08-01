@@ -1,0 +1,65 @@
+[
+  {
+    "vscodeId": "errAnalyst.focusPanel",
+    "title": "erranalyst focuspanel show",
+    "cli": null,
+    "description": "Open ErrAnalyst analysis sidebar",
+    "availability": "vscode"
+  },
+  {
+    "vscodeId": "errAnalyst.analyzeLastError",
+    "title": "erranalyst analyst lasterr",
+    "cli": null,
+    "description": "Analyze the last captured error",
+    "availability": "vscode"
+  },
+  {
+    "vscodeId": "errAnalyst.clearCache",
+    "title": "erranalyst cache clear",
+    "cli": null,
+    "description": "Clear local analysis cache",
+    "availability": "vscode"
+  },
+  {
+    "vscodeId": "errAnalyst.cacheShow",
+    "title": "erranalyst cache show",
+    "cli": "cache show",
+    "description": "List and open local analysis cache",
+    "availability": "both"
+  },
+  {
+    "vscodeId": "errAnalyst.setProvider",
+    "title": "erranalyst provider set",
+    "cli": "provider set",
+    "description": "Configure an AI provider",
+    "availability": "both"
+  },
+  {
+    "vscodeId": "errAnalyst.setActiveProvider",
+    "title": "erranalyst provider switch",
+    "cli": "provider switch",
+    "description": "Switch active provider",
+    "availability": "both"
+  },
+  {
+    "vscodeId": "errAnalyst.showConfig",
+    "title": "erranalyst config show",
+    "cli": "config show",
+    "description": "Show current configuration",
+    "availability": "both"
+  },
+  {
+    "vscodeId": "errAnalyst.setModel",
+    "title": "erranalyst model set",
+    "cli": "model set",
+    "description": "Change model for a provider",
+    "availability": "both"
+  },
+  {
+    "vscodeId": null,
+    "title": "erranalyst help",
+    "cli": "help",
+    "description": "Show this help",
+    "availability": "cli"
+  }
+]

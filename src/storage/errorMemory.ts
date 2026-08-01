@@ -1,9 +1,9 @@
-import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { ErrorAnalysisResult } from '../config';
+import type { ChainEntry, StackFrame } from '../parser';
+import * as errStore from '../shared/err-store';
 
-interface CacheEntry {
+export interface CacheEntry {
   errorKey: string;
   errorType: string;
   errorMessage: string;
@@ -11,12 +11,17 @@ interface CacheEntry {
   keywords: Array<{ cn: string; en: string }>;
   analysis: string;
   fixSuggestion: string;
+  fullTraceback: string;
+  stackFrames: StackFrame[];
+  chain: ChainEntry[];
+  filePath?: string;
+  lineNumber?: number;
+  category?: string;
   firstSeen: number;
   lastSeen: number;
   count: number;
 }
 
-const CACHE_FILE = path.join(os.homedir(), '.errAnalyst', 'cache.json');
 const MAX_CACHE_SIZE = 200;
 const SIMILARITY_THRESHOLD = 0.6;
 
@@ -27,15 +32,15 @@ export class ErrorMemory {
   async init(): Promise<void> {
     if (this.initialized) return;
     try {
-      const dir = path.dirname(CACHE_FILE);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      if (fs.existsSync(CACHE_FILE)) {
-        const data = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
-        for (const entry of data) {
-          this.cache.set(entry.errorKey, entry);
-        }
+      for (const entry of errStore.readCache()) {
+        entry.translation = entry.translation || '';
+        entry.keywords = entry.keywords || [];
+        entry.analysis = entry.analysis || '';
+        entry.fixSuggestion = entry.fixSuggestion || '';
+        entry.fullTraceback = entry.fullTraceback || '';
+        entry.stackFrames = entry.stackFrames || [];
+        entry.chain = entry.chain || [];
+        this.cache.set(entry.errorKey, entry);
       }
       this.initialized = true;
     } catch (e) {
@@ -71,15 +76,19 @@ export class ErrorMemory {
   }
 
   /**
+   * Find a cached solution for an analyzed error, using its canonical key.
+   */
+  findCachedFor(result: Pick<ErrorAnalysisResult, 'errorType' | 'stackFrames'>): CacheEntry | null {
+    return this.findCached(buildErrorKey(result.errorType, result.stackFrames));
+  }
+
+  /**
    * Cache a new error analysis.
    */
   cacheResult(result: ErrorAnalysisResult): void {
     if (!result.translation) return;
 
-    const topFile = result.stackFrames.length > 0
-      ? path.basename(result.stackFrames[result.stackFrames.length - 1].file)
-      : '';
-    const errorKey = `${result.errorType.toLowerCase().replace(/[^a-z0-9]/g, '')}:${topFile}`;
+    const errorKey = buildErrorKey(result.errorType, result.stackFrames);
 
     const entry: CacheEntry = {
       errorKey,
@@ -89,6 +98,12 @@ export class ErrorMemory {
       keywords: (result.keywords || []).map(k => ({ cn: k.cn, en: k.en })),
       analysis: result.analysis || '',
       fixSuggestion: result.fixSuggestion || '',
+      fullTraceback: result.fullTraceback || '',
+      stackFrames: result.stackFrames || [],
+      chain: result.chain || [],
+      filePath: result.filePath,
+      lineNumber: result.lineNumber,
+      category: result.category,
       firstSeen: Date.now(),
       lastSeen: Date.now(),
       count: 1
@@ -116,7 +131,7 @@ export class ErrorMemory {
       const entries = Array.from(this.cache.values())
         .sort((a, b) => b.lastSeen - a.lastSeen)
         .slice(0, MAX_CACHE_SIZE);
-      fs.writeFileSync(CACHE_FILE, JSON.stringify(entries, null, 2), 'utf-8');
+      errStore.writeCache(entries);
     } catch (e) {
       console.error('ErrAnalyst: Failed to persist cache', e);
     }
@@ -154,4 +169,11 @@ export class ErrorMemory {
     }
     return matrix[b.length][a.length];
   }
+}
+
+export function buildErrorKey(errorType: string, stackFrames: StackFrame[]): string {
+  const topFile = stackFrames.length > 0
+    ? path.basename(stackFrames[stackFrames.length - 1].file)
+    : '';
+  return `${errorType.toLowerCase().replace(/[^a-z0-9]/g, '')}:${topFile}`;
 }
