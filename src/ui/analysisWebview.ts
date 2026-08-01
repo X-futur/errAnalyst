@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ErrorAnalysisResult } from '../config';
 import type { BuiltContext, FileContext } from '../context/contextBuilder';
+import type { FixViewSnapshot } from '../fix/session';
 
 type AiAnalysisViewData = {
   translation: string;
@@ -14,6 +15,21 @@ interface ShowOptions {
   cachedAt?: number;
 }
 
+export type FixWebviewAction =
+  | 'acceptFixHunk'
+  | 'rejectFixHunk'
+  | 'acceptAllFix'
+  | 'rejectAllFix'
+  | 'undoAllFix'
+  | 'endFix'
+  | 'openFixHunk';
+
+interface AnalysisViewHandlers {
+  onReanalyze: (error: ErrorAnalysisResult) => void;
+  onStartFix: () => void;
+  onFixAction: (action: FixWebviewAction, hunkId?: string) => void;
+}
+
 export class AnalysisViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'errAnalyst.errorHistory';
   private view?: vscode.WebviewView;
@@ -24,10 +40,13 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
   private fromCache = false;
   private cachedAt = 0;
   private aiError: string | null = null;
+  private fixState: FixViewSnapshot | null = null;
+  private fixGenerating = false;
+  private fixError: string | null = null;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
-    private readonly onReanalyze: (error: ErrorAnalysisResult) => void,
+    private readonly handlers: AnalysisViewHandlers,
   ) {}
 
   resolveWebviewView(
@@ -47,6 +66,9 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
     this.fromCache = options?.fromCache || false;
     this.cachedAt = options?.cachedAt || 0;
     this.aiError = null;
+    this.fixState = null;
+    this.fixGenerating = false;
+    this.fixError = null;
     if (this.view) {
       this.view.show(true);
       this.updateContent();
@@ -66,6 +88,34 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
     this.updateContent();
   }
 
+  showFixGenerating(): void {
+    this.fixGenerating = true;
+    this.fixError = null;
+    this.fixState = null;
+    this.updateContent();
+  }
+
+  showFixSession(snapshot: FixViewSnapshot): void {
+    this.fixState = snapshot;
+    this.fixGenerating = false;
+    this.fixError = null;
+    this.updateContent();
+  }
+
+  showFixError(message: string): void {
+    this.fixError = message;
+    this.fixGenerating = false;
+    this.fixState = null;
+    this.updateContent();
+  }
+
+  clearFixState(): void {
+    this.fixState = null;
+    this.fixGenerating = false;
+    this.fixError = null;
+    this.updateContent();
+  }
+
   /** Show full traceback and code context (sent from extension after AI returns) */
   showContext(fullTraceback: string, context?: BuiltContext): void {
     this.currentTraceback = fullTraceback;
@@ -80,8 +130,22 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'reanalyze':
         if (this.currentError) {
-          this.onReanalyze(this.currentError);
+          this.handlers.onReanalyze(this.currentError);
         }
+        break;
+      case 'startFix':
+        this.handlers.onStartFix();
+        break;
+      case 'acceptFixHunk':
+      case 'rejectFixHunk':
+      case 'openFixHunk':
+        this.handlers.onFixAction(msg.type, msg.hunkId);
+        break;
+      case 'acceptAllFix':
+      case 'rejectAllFix':
+      case 'undoAllFix':
+      case 'endFix':
+        this.handlers.onFixAction(msg.type);
         break;
     }
   }
@@ -273,12 +337,58 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
         + '<div class="section-card"><h4>错误分析</h4>'
         + '<p class="analysis-text">' + analysisHtml + '</p></div>'
         + '<div class="section-card fix-card"><h4>修复建议</h4>'
-        + '<p>' + this.esc(aiData.fixSuggestion) + '</p></div>'
+        + '<p>' + this.esc(aiData.fixSuggestion) + '</p>'
+        + this.buildFixControlsHtml()
+        + '</div>'
         + '</div>';
     }
 
     // Loading state
     return '<div class="analysis-loading"><div class="spinner"></div><p>正在调用 AI 分析...</p></div>';
+  }
+
+  private buildFixControlsHtml(): string {
+    if (this.fixGenerating) {
+      return '<div class="fix-controls fix-generating"><span class="spinner"></span><span>正在生成修复补丁...</span></div>';
+    }
+    if (this.fixError) {
+      return '<div class="fix-controls fix-error">' + this.esc(this.fixError) + '</div>';
+    }
+    if (this.fixState) {
+      const s = this.fixState;
+      const statusLabel: Record<string, string> = {
+        pending: '待确认',
+        accepted: '已接受',
+        rejected: '已拒绝',
+        stale: '已失效',
+      };
+      let hunksHtml = '';
+      for (const h of s.hunks) {
+        hunksHtml += `<div class="fix-hunk-row ${h.status}">`
+          + `<span class="fix-hunk-file">${this.esc(h.file)}${h.line ? ':' + h.line : ''}</span>`
+          + `<span class="fix-hunk-reason">${this.esc(h.reason)}</span>`
+          + `<span class="fix-hunk-status">${statusLabel[h.status] || h.status}</span>`
+          + (h.status === 'pending'
+            ? `<button class="fix-mini-btn" onclick="fixAction('acceptFixHunk','${h.id}')">接受</button>`
+              + `<button class="fix-mini-btn reject" onclick="fixAction('rejectFixHunk','${h.id}')">拒绝</button>`
+            : '')
+          + (h.line ? `<button class="fix-mini-btn" onclick="fixAction('openFixHunk','${h.id}')">查看</button>` : '')
+          + '</div>';
+      }
+      return '<div class="fix-controls">'
+        + `<div class="fix-summary">共 ${s.total} 处 · 待确认 ${s.pending} · 已接受 ${s.accepted}${s.stale ? ` · 失效 ${s.stale}` : ''}</div>`
+        + '<div class="fix-actions">'
+        + `<button class="fix-btn" onclick="fixAction('acceptAllFix')" ${s.pending === 0 ? 'disabled' : ''}>全部接受</button>`
+        + `<button class="fix-btn" onclick="fixAction('rejectAllFix')" ${s.pending === 0 ? 'disabled' : ''}>全部拒绝</button>`
+        + `<button class="fix-btn" onclick="fixAction('undoAllFix')" ${s.accepted === 0 ? 'disabled' : ''}>撤销全部</button>`
+        + '<button class="fix-btn" onclick="fixAction(\'endFix\')">结束修复</button>'
+        + '</div>'
+        + (s.hunks.length > 0
+          ? '<div class="fix-hunks">' + hunksHtml + '</div>'
+          : '<div class="fix-empty">AI 未生成可应用的修复补丁</div>')
+        + '</div>';
+    }
+    return '<div class="fix-controls fix-idle"><button class="fix-btn primary" onclick="startFix()">一键修复</button></div>';
   }
 
   /**
@@ -378,6 +488,29 @@ h3{margin-bottom:8px;font-size:14px;}h4{font-size:11px;text-transform:uppercase;
 .context-empty{color:var(--text-muted);font-size:11px;padding:8px 0;}
 .spinner{width:24px;height:24px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 12px;}
 @keyframes spin{to{transform:rotate(360deg);}}
+.fix-controls{margin-top:8px;border-top:1px solid var(--border);padding-top:8px;display:flex;flex-direction:column;gap:8px;}
+.fix-controls.fix-idle{align-items:flex-end;border-top:none;padding-top:0;margin-top:6px;}
+.fix-controls.fix-generating{flex-direction:row;align-items:center;gap:8px;color:var(--text-muted);font-size:11px;}
+.fix-controls.fix-generating .spinner{width:14px;height:14px;margin:0;border-width:2px;}
+.fix-error{color:var(--error);font-size:11px;}
+.fix-summary{font-size:11px;color:var(--text-muted);}
+.fix-actions{display:flex;gap:6px;flex-wrap:wrap;}
+.fix-btn{background:var(--bg-card);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:4px 8px;font-size:11px;cursor:pointer;}
+.fix-btn:hover:not(:disabled){border-color:var(--accent);color:#fff;}
+.fix-btn:disabled{opacity:.45;cursor:default;}
+.fix-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;}
+.fix-hunks{display:flex;flex-direction:column;gap:4px;max-height:180px;overflow-y:auto;}
+.fix-hunk-row{display:flex;align-items:center;gap:6px;font-size:11px;background:rgba(255,255,255,0.02);border:1px solid var(--border);border-radius:4px;padding:4px 6px;}
+.fix-hunk-row.accepted{border-left:3px solid var(--success);}
+.fix-hunk-row.rejected{opacity:.6;}
+.fix-hunk-row.stale{border-left:3px solid #f44747;opacity:.7;}
+.fix-hunk-file{color:#569cd6;font-family:Consolas,Monaco,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px;}
+.fix-hunk-reason{flex:1;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.fix-hunk-status{color:var(--text-muted);white-space:nowrap;}
+.fix-mini-btn{background:transparent;border:1px solid var(--border);color:var(--text);border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;white-space:nowrap;}
+.fix-mini-btn:hover{border-color:var(--accent);}
+.fix-mini-btn.reject:hover{border-color:#f44747;color:#f44747;}
+.fix-empty{color:var(--text-muted);font-size:11px;}
 </style>
 </head>
 <body>
@@ -395,6 +528,14 @@ ${terminalHtml}
 
   window.reanalyze = function() {
     vscode.postMessage({ type: 'reanalyze' });
+  };
+
+  window.startFix = function() {
+    vscode.postMessage({ type: 'startFix' });
+  };
+
+  window.fixAction = function(action, id) {
+    vscode.postMessage({ type: action, hunkId: id });
   };
 
   // Toggle file context sections

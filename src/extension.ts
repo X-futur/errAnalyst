@@ -7,9 +7,16 @@ import { CategoryClassifier } from './diagnostics/categoryClassifier';
 import { ContextBuilder } from './context/contextBuilder';
 import { ErrorMemory } from './storage/errorMemory';
 import { TerminalWatcher } from './terminalWatcher';
-import { AnalysisViewProvider } from './ui/analysisWebview';
+import { AnalysisViewProvider, type FixWebviewAction } from './ui/analysisWebview';
 import { ErrorHoverProvider } from './ui/hoverProvider';
 import { createProvider, buildAnalysisPrompts, parseAiResponse } from './llmProvider';
+import { FixSessionManager } from './fix/session';
+import { FixDecorationManager } from './fix/decoration';
+import { buildFixPrompts, parseFixResponse } from './fix/prompt';
+import type { FixHunk } from './fix/types';
+import type { ParsedTraceback } from './parser';
+import type { BuiltContext } from './context/contextBuilder';
+import type { LlmProvider } from './llmProvider/types';
 import type { ErrorAnalysisResult } from './config';
 import { ConfigWizard } from './ui/configWizard';
 import { ConfigManager } from './configManager';
@@ -17,6 +24,8 @@ import { ConfigManager } from './configManager';
 let terminalWatcher: TerminalWatcher;
 let hoverProvider: ErrorHoverProvider;
 let analysisViewProvider: AnalysisViewProvider;
+let fixDecorationManager: FixDecorationManager;
+let fixSessionManager: FixSessionManager;
 let errorMemory: ErrorMemory;
 let categoryClassifier: CategoryClassifier;
 let contextBuilder: ContextBuilder;
@@ -53,11 +62,37 @@ export function activate(context: vscode.ExtensionContext) {
   errorMemory = new ErrorMemory();
   errorMemory.init();
 
-  analysisViewProvider = new AnalysisViewProvider(context.extensionUri, (error) => {
-    void autoAnalyze(error, error.category || 'UNKNOWN', { force: true });
+  analysisViewProvider = new AnalysisViewProvider(context.extensionUri, {
+    onReanalyze: (error) => {
+      fixSessionManager?.end();
+      void autoAnalyze(error, error.category || 'UNKNOWN', { force: true });
+    },
+    onStartFix: () => {
+      void runFixFlow();
+    },
+    onFixAction: (action, hunkId) => {
+      handleFixAction(action, hunkId);
+    },
   });
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(AnalysisViewProvider.viewType, analysisViewProvider)
+  );
+
+  fixDecorationManager = new FixDecorationManager();
+  fixSessionManager = new FixSessionManager({
+    decorations: fixDecorationManager,
+    onStateChanged: (snapshot) => {
+      if (snapshot) analysisViewProvider.showFixSession(snapshot);
+      else analysisViewProvider.clearFixState();
+    },
+  });
+  context.subscriptions.push(
+    vscode.languages.registerCodeLensProvider({ scheme: 'file' }, fixDecorationManager),
+    vscode.commands.registerCommand('errAnalyst.acceptFixHunk', (id: string) => void fixSessionManager.accept(id)),
+    vscode.commands.registerCommand('errAnalyst.rejectFixHunk', (id: string) => void fixSessionManager.reject(id)),
+    vscode.workspace.onDidChangeTextDocument(() => {
+      if (fixSessionManager?.active) void fixSessionManager.refresh();
+    }),
   );
 
   hoverProvider = new ErrorHoverProvider();
@@ -72,6 +107,7 @@ export function activate(context: vscode.ExtensionContext) {
   // ── Terminal watcher ──
 
   terminalWatcher = new TerminalWatcher(async (result) => {
+    fixSessionManager.end();
     lastError = result;
 
     // 1. Run category classifier
@@ -127,6 +163,8 @@ export function deactivate() {
   terminalWatcher?.deactivate();
   hoverProvider?.clearHover();
   configManager?.dispose();
+  fixSessionManager?.end();
+  fixDecorationManager?.dispose();
 }
 
 function registerManifestCommands(context: vscode.ExtensionContext): void {
@@ -156,6 +194,7 @@ function registerManifestCommands(context: vscode.ExtensionContext): void {
         const category = categoryClassifier.classify(parseResult);
         result.category = category;
         lastError = result;
+        fixSessionManager.end();
         analysisViewProvider.show(result);
         await autoAnalyze(result, category);
       }
@@ -182,6 +221,7 @@ function registerManifestCommands(context: vscode.ExtensionContext): void {
       });
       if (!selected) return;
 
+      fixSessionManager.end();
       const entry = selected.entry;
       const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
       const result: ErrorAnalysisResult = {
@@ -235,6 +275,119 @@ function registerManifestCommands(context: vscode.ExtensionContext): void {
   }
 }
 
+function handleFixAction(action: FixWebviewAction, hunkId?: string): void {
+  switch (action) {
+    case 'acceptFixHunk':
+      if (hunkId) void fixSessionManager.accept(hunkId);
+      break;
+    case 'rejectFixHunk':
+      if (hunkId) void fixSessionManager.reject(hunkId);
+      break;
+    case 'acceptAllFix':
+      void fixSessionManager.acceptAll();
+      break;
+    case 'rejectAllFix':
+      void fixSessionManager.rejectAll();
+      break;
+    case 'undoAllFix':
+      void fixSessionManager.undoAll();
+      break;
+    case 'endFix':
+      fixSessionManager.end();
+      break;
+    case 'openFixHunk':
+      if (hunkId) void fixSessionManager.openHunk(hunkId);
+      break;
+  }
+}
+
+async function runFixFlow(): Promise<void> {
+  const config = Config.getInstance();
+  if (!config.getEnableOneClickFix()) {
+    vscode.window.showInformationMessage('ErrAnalyst: 一键修复功能已在设置中关闭');
+    return;
+  }
+  if (!lastError) return;
+
+  const provider = await config.getActiveProvider();
+  if (!provider) {
+    analysisViewProvider.showFixError('未配置可用的 AI Provider，请先完成配置');
+    return;
+  }
+  const llm = createProvider(provider);
+  if (!llm) {
+    analysisViewProvider.showFixError('AI Provider 初始化失败');
+    return;
+  }
+
+  analysisViewProvider.showFixGenerating();
+  try {
+    const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
+    const parsedTraceback: ParsedTraceback = {
+      errorType: lastError.errorType,
+      errorMessage: lastError.errorMessage,
+      filePath: lastError.filePath,
+      lineNumber: lastError.lineNumber,
+      stackFrames: lastError.stackFrames || [],
+      fullTraceback: lastError.fullTraceback || '',
+      chain: lastError.chain || [],
+    };
+    const context = contextBuilder.build(parsedTraceback, workspaceFolders);
+    const analysisText = [
+      lastError.translation ? '翻译：' + lastError.translation : '',
+      lastError.analysis ? '分析：' + lastError.analysis : '',
+      lastError.fixSuggestion ? '文字建议：' + lastError.fixSuggestion : '',
+    ].filter(Boolean).join('\n\n');
+
+    const hunks = await generateFixHunks(llm, parsedTraceback, context, analysisText);
+    await fixSessionManager.start(lastError, hunks);
+    if (hunks.length === 0) {
+      vscode.window.showInformationMessage('ErrAnalyst: AI 未生成可应用的修复补丁');
+    }
+  } catch (e) {
+    analysisViewProvider.showFixError(e instanceof Error ? e.message : String(e));
+    console.error('ErrAnalyst: fix generation failed', e);
+  }
+}
+
+async function generateFixHunks(
+  provider: LlmProvider,
+  traceback: ParsedTraceback,
+  context: BuiltContext,
+  analysisText: string,
+): Promise<FixHunk[]> {
+  const prompts = buildFixPrompts(traceback, context, analysisText);
+  console.log('ErrAnalyst: fix userPrompt length =', prompts.userPrompt.length);
+  const response = await provider.analyze({
+    systemPrompt: prompts.systemPrompt,
+    userPrompt: prompts.userPrompt,
+    timeout: Config.getInstance().getAiTimeout(),
+  });
+  if (!response.success) {
+    throw new Error(response.error || 'AI 请求失败');
+  }
+
+  const allowedFiles = collectAllowedFiles(context, traceback);
+  return parseFixResponse(response.content, allowedFiles).map((input, i) => ({
+    id: `hunk-${Date.now()}-${i}`,
+    file: input.file,
+    reason: input.reason,
+    oldLines: input.oldLines,
+    newLines: input.newLines,
+    status: 'pending' as const,
+  }));
+}
+
+function collectAllowedFiles(context: BuiltContext, traceback: ParsedTraceback): string[] {
+  const files = new Set<string>();
+  if (context.mainFile) files.add(context.mainFile.path);
+  for (const f of [...context.stackFiles, ...context.configFiles, ...context.siblingFiles]) {
+    files.add(f.path);
+  }
+  if (traceback.filePath) files.add(traceback.filePath);
+  return [...files];
+}
+
 // 自动分析主流程
 // 获取上下文 -> 构建 Prompt -> 请求 LLM -> 解析响应 -> 刷新 UI 并写入缓存
 async function autoAnalyze(
@@ -255,35 +408,13 @@ async function autoAnalyze(
     errorMessage: result.errorMessage,
     filePath: result.filePath,
     lineNumber: result.lineNumber,
-    stackFrames: result.stackFrames,
-    fullTraceback: result.fullTraceback,
-    chain: result.chain,
+    stackFrames: result.stackFrames || [],
+    fullTraceback: result.fullTraceback || '',
+    chain: result.chain || [],
   };
 
   const context = contextBuilder.build(parsedTraceback, workspaceFolders);
   analysisViewProvider.showContext(result.fullTraceback, context);
-
-  // ── Check cache ──
-  if (!force) {
-    const cached = errorMemory.findCachedFor(result);
-    if (cached) {
-      result.translation = cached.translation || '';
-      result.keywords = cached.keywords || [];
-      result.analysis = cached.analysis || '';
-      result.fixSuggestion = cached.fixSuggestion || '';
-      if (cached.category) result.category = cached.category;
-
-      const aiData = {
-        translation: cached.translation,
-        keywords: cached.keywords,
-        analysis: cached.analysis,
-        fixSuggestion: cached.fixSuggestion,
-      };
-      analysisViewProvider.show(result, aiData, { fromCache: true, cachedAt: cached.lastSeen });
-      hoverProvider.showHover(result, aiData);
-      return;
-    }
-  }
 
   // ── Build AI context ──
   const provider = await config.getActiveProvider();
@@ -338,6 +469,7 @@ async function autoAnalyze(
   console.log('\n═══ systemPrompt (发送给 LLM) ═══');
   console.log(prompts.systemPrompt);
   console.log('\n═══ userPrompt (发送给 LLM) ═══');
+  console.log('userPrompt length:', prompts.userPrompt.length);
   console.log(prompts.userPrompt);
   console.log('='.repeat(80));
 

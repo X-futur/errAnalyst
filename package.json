@@ -151,6 +151,11 @@
           "type": "number",
           "default": 15000,
           "description": "AI 请求超时时间（毫秒）"
+        },
+        "errAnalyst.enableOneClickFix": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用修复建议卡片的一键修复功能"
         }
       }
     }

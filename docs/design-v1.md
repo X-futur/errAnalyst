@@ -205,11 +205,11 @@
  
  ## 九、存储与缓存
  
- - 缓存位置：`~/.errAnalyst/cache.json`
- - 缓存上限：200 条
- - 匹配策略：精确匹配 → Levenshtein 距离模糊匹配（阈值 0.6）
- - 缓存内容：translation、keywords、analysis、fixSuggestion（无 fixCode）
- - 错误历史列表通过缓存数据展示
+- 缓存位置：`~/.errAnalyst/cache.json`
+- 缓存上限：200 条
+- 匹配策略：自动分析不查询缓存，每次报错分析都调用 AI；缓存仅作为历史记录，通过缓存查阅/错误历史展示
+- 缓存内容：translation、keywords、analysis、fixSuggestion（无 fixCode）
+- 错误历史列表通过缓存数据展示
  
  ## 十、文件结构
  

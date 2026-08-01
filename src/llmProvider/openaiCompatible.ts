@@ -19,12 +19,14 @@ export class OpenAICompatibleProvider implements LlmProvider {
     const { systemPrompt, userPrompt, timeout } = request;
     const baseUrl = this.config.baseUrl.replace(/\/+$/, '');
     const url = new URL(`${baseUrl}/chat/completions`);
+    const safeSystemPrompt = systemPrompt && systemPrompt.trim() ? systemPrompt : '你是 ErrAnalyst 错误分析助手。';
+    const safeUserPrompt = userPrompt && userPrompt.trim() ? userPrompt : '请分析本次报错并给出修复建议。';
 
     const body = JSON.stringify({
       model: this.config.model,
       messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt }
+        { role: 'system', content: safeSystemPrompt },
+        { role: 'user', content: safeUserPrompt }
       ],
       temperature: 0.1,
       max_tokens: 4096
@@ -118,12 +120,15 @@ function buildUserPrompt(
   context?: BuiltContext,
 ): string {
   const lines: string[] = [];
+  const fullTraceback = traceback.fullTraceback || '';
+  const stackFrames = traceback.stackFrames || [];
+  const chain = traceback.chain || [];
 
   // ═══ Part 1: 原始 traceback 全文（兜底保障） ═══
   lines.push('## Original Traceback');
   lines.push('');
   lines.push('```');
-  lines.push(traceback.fullTraceback);
+  lines.push(fullTraceback);
   lines.push('```');
   lines.push('');
 
@@ -141,21 +146,21 @@ function buildUserPrompt(
   }
   lines.push('');
 
-  if (traceback.stackFrames.length > 0) {
+  if (stackFrames.length > 0) {
     lines.push('Stack frames:');
-    for (const frame of traceback.stackFrames.slice(0, 15)) {
+    for (const frame of stackFrames.slice(0, 15)) {
       const code = frame.codeLine ? '  -> ' + frame.codeLine : '';
       lines.push('  ' + frame.file + ':' + frame.line + ' in ' + frame.function + code);
     }
     lines.push('');
   }
 
-  if (traceback.chain.length > 0) {
+  if (chain.length > 0) {
     lines.push('Error chain (cause -> ... -> primary):');
-    for (const entry of traceback.chain) {
+    for (const entry of chain) {
       const rel = entry.relationship === 'cause' ? 'cause' : 'context';
       lines.push('  [' + rel + '] ' + entry.filePath + ':' + entry.lineNumber + ' -- ' + entry.errorType + ': ' + entry.errorMessage.slice(0, 100));
-      for (const frame of entry.stackFrames.slice(0, 5)) {
+      for (const frame of (entry.stackFrames || []).slice(0, 5)) {
         const code = frame.codeLine ? '  -> ' + frame.codeLine : '';
         lines.push('    ' + frame.file + ':' + frame.line + ' in ' + frame.function + code);
       }
@@ -178,7 +183,7 @@ function buildUserPrompt(
       lines.push('');
     }
 
-    for (const f of context.stackFiles.slice(0, 5)) {
+    for (const f of (context.stackFiles || []).slice(0, 5)) {
       lines.push('### ' + f.path + ':' + f.startLine + '-' + f.endLine + ' (stack frame)');
       lines.push('```');
       lines.push(f.content);
@@ -186,7 +191,7 @@ function buildUserPrompt(
       lines.push('');
     }
 
-    for (const f of context.configFiles.slice(0, 2)) {
+    for (const f of (context.configFiles || []).slice(0, 2)) {
       lines.push('### ' + f.path + ':' + f.startLine + '-' + f.endLine + ' (config)');
       lines.push('```');
       lines.push(f.content);
@@ -194,7 +199,7 @@ function buildUserPrompt(
       lines.push('');
     }
 
-    for (const f of context.siblingFiles.slice(0, 1)) {
+    for (const f of (context.siblingFiles || []).slice(0, 1)) {
       lines.push('### ' + f.path + ':' + f.startLine + '-' + f.endLine + ' (sibling)');
       lines.push('```');
       lines.push(f.content);

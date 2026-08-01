@@ -131,6 +131,10 @@ class Config {
         return vscode.workspace.getConfiguration('errAnalyst')
             .get('aiTimeout', 15000);
     }
+    getEnableOneClickFix() {
+        return vscode.workspace.getConfiguration('errAnalyst')
+            .get('enableOneClickFix', true);
+    }
 }
 exports.Config = Config;
 //# sourceMappingURL=config.js.map

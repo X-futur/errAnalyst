@@ -23,7 +23,6 @@ export interface CacheEntry {
 }
 
 const MAX_CACHE_SIZE = 200;
-const SIMILARITY_THRESHOLD = 0.6;
 
 export class ErrorMemory {
   private cache: Map<string, CacheEntry> = new Map();
@@ -46,40 +45,6 @@ export class ErrorMemory {
     } catch (e) {
       console.error('ErrAnalyst: Failed to load cache', e);
     }
-  }
-
-  /**
-   * Find a cached solution for the given error.
-   */
-  findCached(errorKey: string): CacheEntry | null {
-    // Exact match
-    if (this.cache.has(errorKey)) {
-      const entry = this.cache.get(errorKey)!;
-      entry.lastSeen = Date.now();
-      entry.count++;
-      this.persist();
-      return entry;
-    }
-
-    // Fuzzy match by error type prefix
-    const errorTypeBase = errorKey.split(':')[0];
-    for (const [key, entry] of this.cache.entries()) {
-      if (key.startsWith(errorTypeBase) && this.similar(errorKey, key) > SIMILARITY_THRESHOLD) {
-        entry.lastSeen = Date.now();
-        entry.count++;
-        this.persist();
-        return entry;
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Find a cached solution for an analyzed error, using its canonical key.
-   */
-  findCachedFor(result: Pick<ErrorAnalysisResult, 'errorType' | 'stackFrames'>): CacheEntry | null {
-    return this.findCached(buildErrorKey(result.errorType, result.stackFrames));
   }
 
   /**
@@ -137,38 +102,6 @@ export class ErrorMemory {
     }
   }
 
-  private similar(a: string, b: string): number {
-    if (a === b) return 1;
-    const shorter = a.length < b.length ? a : b;
-    const longer = a.length < b.length ? b : a;
-    if (longer.length === 0) return 1;
-    const editDist = this.levenshtein(shorter, longer);
-    return 1 - editDist / longer.length;
-  }
-
-  private levenshtein(a: string, b: string): number {
-    const matrix: number[][] = [];
-    for (let i = 0; i <= b.length; i++) {
-      matrix[i] = [i];
-    }
-    for (let j = 0; j <= a.length; j++) {
-      matrix[0][j] = j;
-    }
-    for (let i = 1; i <= b.length; i++) {
-      for (let j = 1; j <= a.length; j++) {
-        if (b.charAt(i - 1) === a.charAt(j - 1)) {
-          matrix[i][j] = matrix[i - 1][j - 1];
-        } else {
-          matrix[i][j] = Math.min(
-            matrix[i - 1][j - 1] + 1,
-            matrix[i][j - 1] + 1,
-            matrix[i - 1][j] + 1
-          );
-        }
-      }
-    }
-    return matrix[b.length][a.length];
-  }
 }
 
 export function buildErrorKey(errorType: string, stackFrames: StackFrame[]): string {

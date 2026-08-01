@@ -1,6 +1,6 @@
 # ErrAnalyst Context
 
-ErrAnalyst captures terminal errors, analyzes them with an LLM, and helps the user understand the root cause and fix.
+ErrAnalyst captures terminal errors, analyzes them with an LLM, and helps the user understand the root cause and fix it with confirmed code changes.
 
 ## Language
 
@@ -9,8 +9,8 @@ ErrAnalyst captures terminal errors, analyzes them with an LLM, and helps the us
 _Avoid_: 历史记录、最近错误
 
 **本地缓存**:
-保存在本机的错误分析结果，用于同类错误再次出现时复用或按需查阅，与侧边栏展示解耦。
-_Avoid_: 缓存列表、历史数据
+保存在本机的错误分析结果，仅作为历史记录供用户按需查阅，不参与自动分析；每次报错分析都会调用 AI。
+_Avoid_: 缓存列表、历史数据、分析复用
 
 **错误分析视图**:
 错误发生时在侧边栏自动展示的分析界面，是当前分析结果的唯一展示位置。
@@ -19,3 +19,25 @@ _Avoid_: 分析面板、旁侧窗口
 **缓存查阅**:
 用户通过命令按需选择缓存条目并查看其分析结果的入口，不构成常驻列表。
 _Avoid_: 历史列表、最近错误
+
+## 修复
+
+**修复建议**:
+AI 分析返回的纯文字修复指引，不含代码修改。
+_Avoid_: 修复方案、修复提示
+
+**一键修复**:
+修复建议卡片右下角的功能入口：AI 生成代码修复补丁，用户逐处确认后才写入本地文件。
+_Avoid_: 自动修复、自动改代码
+
+**修复补丁**:
+AI 为当前报错生成的一组待确认代码修改（含文件、位置、增删内容），确认前不落盘。
+_Avoid_: fixCode、actions
+
+**修改处**:
+修复补丁中可单独接受或拒绝的最小单元（一个结构化 hunk），编辑器里对应一段绿/红区域。
+_Avoid_: diff 块、变更块
+
+**修复会话**:
+从生成修复补丁到结束（遇到新报错、重新 AI 分析或用户主动结束）之间的确认状态，包含各修改处的接受/拒绝结果与“撤销全部”能力。
+_Avoid_: 修复流程、修复状态

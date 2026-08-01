@@ -47,11 +47,16 @@ const terminalWatcher_1 = require("./terminalWatcher");
 const analysisWebview_1 = require("./ui/analysisWebview");
 const hoverProvider_1 = require("./ui/hoverProvider");
 const llmProvider_1 = require("./llmProvider");
+const session_1 = require("./fix/session");
+const decoration_1 = require("./fix/decoration");
+const prompt_1 = require("./fix/prompt");
 const configWizard_1 = require("./ui/configWizard");
 const configManager_1 = require("./configManager");
 let terminalWatcher;
 let hoverProvider;
 let analysisViewProvider;
+let fixDecorationManager;
+let fixSessionManager;
 let errorMemory;
 let categoryClassifier;
 let contextBuilder;
@@ -75,10 +80,33 @@ function activate(context) {
     // ── Init modules ──
     errorMemory = new errorMemory_1.ErrorMemory();
     errorMemory.init();
-    analysisViewProvider = new analysisWebview_1.AnalysisViewProvider(context.extensionUri, (error) => {
-        void autoAnalyze(error, error.category || 'UNKNOWN', { force: true });
+    analysisViewProvider = new analysisWebview_1.AnalysisViewProvider(context.extensionUri, {
+        onReanalyze: (error) => {
+            fixSessionManager?.end();
+            void autoAnalyze(error, error.category || 'UNKNOWN', { force: true });
+        },
+        onStartFix: () => {
+            void runFixFlow();
+        },
+        onFixAction: (action, hunkId) => {
+            handleFixAction(action, hunkId);
+        },
     });
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(analysisWebview_1.AnalysisViewProvider.viewType, analysisViewProvider));
+    fixDecorationManager = new decoration_1.FixDecorationManager();
+    fixSessionManager = new session_1.FixSessionManager({
+        decorations: fixDecorationManager,
+        onStateChanged: (snapshot) => {
+            if (snapshot)
+                analysisViewProvider.showFixSession(snapshot);
+            else
+                analysisViewProvider.clearFixState();
+        },
+    });
+    context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, fixDecorationManager), vscode.commands.registerCommand('errAnalyst.acceptFixHunk', (id) => void fixSessionManager.accept(id)), vscode.commands.registerCommand('errAnalyst.rejectFixHunk', (id) => void fixSessionManager.reject(id)), vscode.workspace.onDidChangeTextDocument(() => {
+        if (fixSessionManager?.active)
+            void fixSessionManager.refresh();
+    }));
     hoverProvider = new hoverProvider_1.ErrorHoverProvider();
     // Initialize category classifier from the bundled YAML rules
     categoryClassifier = new categoryClassifier_1.CategoryClassifier();
@@ -87,6 +115,7 @@ function activate(context) {
     contextBuilder = new contextBuilder_1.ContextBuilder();
     // ── Terminal watcher ──
     terminalWatcher = new terminalWatcher_1.TerminalWatcher(async (result) => {
+        fixSessionManager.end();
         lastError = result;
         // 1. Run category classifier
         const category = categoryClassifier.classify({
@@ -133,6 +162,8 @@ function deactivate() {
     terminalWatcher?.deactivate();
     hoverProvider?.clearHover();
     configManager?.dispose();
+    fixSessionManager?.end();
+    fixDecorationManager?.dispose();
 }
 function registerManifestCommands(context) {
     const manifest = loadCommandManifest(context.extensionPath);
@@ -161,6 +192,7 @@ function registerManifestCommands(context) {
                 const category = categoryClassifier.classify(parseResult);
                 result.category = category;
                 lastError = result;
+                fixSessionManager.end();
                 analysisViewProvider.show(result);
                 await autoAnalyze(result, category);
             }
@@ -187,6 +219,7 @@ function registerManifestCommands(context) {
             });
             if (!selected)
                 return;
+            fixSessionManager.end();
             const entry = selected.entry;
             const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
             const result = {
@@ -239,6 +272,113 @@ function registerManifestCommands(context) {
         }
     }
 }
+function handleFixAction(action, hunkId) {
+    switch (action) {
+        case 'acceptFixHunk':
+            if (hunkId)
+                void fixSessionManager.accept(hunkId);
+            break;
+        case 'rejectFixHunk':
+            if (hunkId)
+                void fixSessionManager.reject(hunkId);
+            break;
+        case 'acceptAllFix':
+            void fixSessionManager.acceptAll();
+            break;
+        case 'rejectAllFix':
+            void fixSessionManager.rejectAll();
+            break;
+        case 'undoAllFix':
+            void fixSessionManager.undoAll();
+            break;
+        case 'endFix':
+            fixSessionManager.end();
+            break;
+        case 'openFixHunk':
+            if (hunkId)
+                void fixSessionManager.openHunk(hunkId);
+            break;
+    }
+}
+async function runFixFlow() {
+    const config = config_1.Config.getInstance();
+    if (!config.getEnableOneClickFix()) {
+        vscode.window.showInformationMessage('ErrAnalyst: 一键修复功能已在设置中关闭');
+        return;
+    }
+    if (!lastError)
+        return;
+    const provider = await config.getActiveProvider();
+    if (!provider) {
+        analysisViewProvider.showFixError('未配置可用的 AI Provider，请先完成配置');
+        return;
+    }
+    const llm = (0, llmProvider_1.createProvider)(provider);
+    if (!llm) {
+        analysisViewProvider.showFixError('AI Provider 初始化失败');
+        return;
+    }
+    analysisViewProvider.showFixGenerating();
+    try {
+        const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
+        const parsedTraceback = {
+            errorType: lastError.errorType,
+            errorMessage: lastError.errorMessage,
+            filePath: lastError.filePath,
+            lineNumber: lastError.lineNumber,
+            stackFrames: lastError.stackFrames || [],
+            fullTraceback: lastError.fullTraceback || '',
+            chain: lastError.chain || [],
+        };
+        const context = contextBuilder.build(parsedTraceback, workspaceFolders);
+        const analysisText = [
+            lastError.translation ? '翻译：' + lastError.translation : '',
+            lastError.analysis ? '分析：' + lastError.analysis : '',
+            lastError.fixSuggestion ? '文字建议：' + lastError.fixSuggestion : '',
+        ].filter(Boolean).join('\n\n');
+        const hunks = await generateFixHunks(llm, parsedTraceback, context, analysisText);
+        await fixSessionManager.start(lastError, hunks);
+        if (hunks.length === 0) {
+            vscode.window.showInformationMessage('ErrAnalyst: AI 未生成可应用的修复补丁');
+        }
+    }
+    catch (e) {
+        analysisViewProvider.showFixError(e instanceof Error ? e.message : String(e));
+        console.error('ErrAnalyst: fix generation failed', e);
+    }
+}
+async function generateFixHunks(provider, traceback, context, analysisText) {
+    const prompts = (0, prompt_1.buildFixPrompts)(traceback, context, analysisText);
+    console.log('ErrAnalyst: fix userPrompt length =', prompts.userPrompt.length);
+    const response = await provider.analyze({
+        systemPrompt: prompts.systemPrompt,
+        userPrompt: prompts.userPrompt,
+        timeout: config_1.Config.getInstance().getAiTimeout(),
+    });
+    if (!response.success) {
+        throw new Error(response.error || 'AI 请求失败');
+    }
+    const allowedFiles = collectAllowedFiles(context, traceback);
+    return (0, prompt_1.parseFixResponse)(response.content, allowedFiles).map((input, i) => ({
+        id: `hunk-${Date.now()}-${i}`,
+        file: input.file,
+        reason: input.reason,
+        oldLines: input.oldLines,
+        newLines: input.newLines,
+        status: 'pending',
+    }));
+}
+function collectAllowedFiles(context, traceback) {
+    const files = new Set();
+    if (context.mainFile)
+        files.add(context.mainFile.path);
+    for (const f of [...context.stackFiles, ...context.configFiles, ...context.siblingFiles]) {
+        files.add(f.path);
+    }
+    if (traceback.filePath)
+        files.add(traceback.filePath);
+    return [...files];
+}
 // 自动分析主流程
 // 获取上下文 -> 构建 Prompt -> 请求 LLM -> 解析响应 -> 刷新 UI 并写入缓存
 async function autoAnalyze(result, category, options) {
@@ -253,33 +393,12 @@ async function autoAnalyze(result, category, options) {
         errorMessage: result.errorMessage,
         filePath: result.filePath,
         lineNumber: result.lineNumber,
-        stackFrames: result.stackFrames,
-        fullTraceback: result.fullTraceback,
-        chain: result.chain,
+        stackFrames: result.stackFrames || [],
+        fullTraceback: result.fullTraceback || '',
+        chain: result.chain || [],
     };
     const context = contextBuilder.build(parsedTraceback, workspaceFolders);
     analysisViewProvider.showContext(result.fullTraceback, context);
-    // ── Check cache ──
-    if (!force) {
-        const cached = errorMemory.findCachedFor(result);
-        if (cached) {
-            result.translation = cached.translation || '';
-            result.keywords = cached.keywords || [];
-            result.analysis = cached.analysis || '';
-            result.fixSuggestion = cached.fixSuggestion || '';
-            if (cached.category)
-                result.category = cached.category;
-            const aiData = {
-                translation: cached.translation,
-                keywords: cached.keywords,
-                analysis: cached.analysis,
-                fixSuggestion: cached.fixSuggestion,
-            };
-            analysisViewProvider.show(result, aiData, { fromCache: true, cachedAt: cached.lastSeen });
-            hoverProvider.showHover(result, aiData);
-            return;
-        }
-    }
     // ── Build AI context ──
     const provider = await config.getActiveProvider();
     console.log('ErrAnalyst: fetching active provider...');
@@ -324,6 +443,7 @@ async function autoAnalyze(result, category, options) {
     console.log('\n═══ systemPrompt (发送给 LLM) ═══');
     console.log(prompts.systemPrompt);
     console.log('\n═══ userPrompt (发送给 LLM) ═══');
+    console.log('userPrompt length:', prompts.userPrompt.length);
     console.log(prompts.userPrompt);
     console.log('='.repeat(80));
     // ── Call AI ──
