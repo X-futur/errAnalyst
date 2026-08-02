@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
-import { ErrorAnalysisResult } from '../config';
+import { Config, ErrorAnalysisResult } from '../config';
 import type { BuiltContext, FileContext } from '../context/contextBuilder';
 import type { FixViewSnapshot } from '../fix/session';
+import type { ChatViewSnapshot } from '../chat/types';
 
 type AiAnalysisViewData = {
   translation: string;
@@ -24,10 +25,19 @@ export type FixWebviewAction =
   | 'endFix'
   | 'openFixHunk';
 
+export type ChatWebviewAction =
+  | 'newChatSession'
+  | 'generatePatch'
+  | 'removeFile'
+  | 'restoreDefaults';
+
 interface AnalysisViewHandlers {
   onReanalyze: (error: ErrorAnalysisResult) => void;
   onStartFix: () => void;
   onFixAction: (action: FixWebviewAction, hunkId?: string) => void;
+  onChatSend: (content: string) => void;
+  onChatAction: (action: ChatWebviewAction, fileId?: string) => void;
+  onChatAddFiles: () => void;
 }
 
 export class AnalysisViewProvider implements vscode.WebviewViewProvider {
@@ -43,6 +53,7 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
   private fixState: FixViewSnapshot | null = null;
   private fixGenerating = false;
   private fixError: string | null = null;
+  private chatSnapshot: ChatViewSnapshot | null = null;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -123,6 +134,11 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
     this.updateContent();
   }
 
+  showChat(snapshot: ChatViewSnapshot): void {
+    this.chatSnapshot = snapshot;
+    this.updateContent();
+  }
+
   private handleWebviewMessage(msg: any): void {
     switch (msg.type) {
       case 'openFile':
@@ -146,6 +162,17 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
       case 'undoAllFix':
       case 'endFix':
         this.handlers.onFixAction(msg.type);
+        break;
+      case 'chatSend':
+        if (typeof msg.content === 'string') {
+          this.handlers.onChatSend(msg.content);
+        }
+        break;
+      case 'chatAction':
+        this.handlers.onChatAction(msg.action, msg.fileId);
+        break;
+      case 'chatAddFiles':
+        this.handlers.onChatAddFiles();
         break;
     }
   }
@@ -310,44 +337,53 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
     if (!error) return '';
     const aiData = this.currentAiData;
 
+    let body: string;
     if (this.aiError) {
-      return '<div class="analysis-error">' + this.esc(this.aiError) + '</div>';
+      body = '<div class="analysis-error">' + this.esc(this.aiError) + '</div>';
+    } else if (aiData) {
+      body = this.buildAnalysisContentHtml(error, aiData);
+    } else {
+      // Loading state
+      body = '<div class="analysis-loading"><div class="spinner"></div><p>正在调用 AI 分析...</p></div>';
     }
 
-    if (aiData) {
-      let kwPills = '';
-      for (const kw of aiData.keywords) {
-        kwPills += '<span class="keyword-badge" data-en="' + this.esc(kw.en) + '" data-cn="' + this.esc(kw.cn) + '">'
-          + '<span class="kw-en">' + this.esc(kw.en) + '</span> ↔ '
-          + '<span class="kw-cn">' + this.esc(kw.cn) + '</span>'
-          + '</span>';
-      }
+    if (this.chatSnapshot && Config.getInstance().getEnableChat()) {
+      body += this.buildChatHtml();
+    }
+    return body;
+  }
 
-      // Make file:line references clickable in analysis text
-      const analysisHtml = this.makeFileLinksClickable(this.esc(aiData.analysis));
-
-      return '<div class="analysis-content">'
-        + '<div class="error-pair">'
-        + '<div class="error-original"><h4>原始报错</h4>'
-        + '<pre class="error-text">'
-        + '<div class="error-type">' + this.esc(error.errorType) + '</div>'
-        + '<div class="error-msg">' + this.esc(error.errorMessage) + '</div>'
-        + '</pre></div>'
-        + '<div class="error-translated"><h4>中文翻译</h4>'
-        + '<div class="translated-text">' + aiData.translation + '</div>'
-        + '</div></div>'
-        + (kwPills ? '<div class="keyword-pills">' + kwPills + '</div>' : '')
-        + '<div class="section-card"><h4>错误分析</h4>'
-        + '<p class="analysis-text">' + analysisHtml + '</p></div>'
-        + '<div class="section-card fix-card"><h4>修复建议</h4>'
-        + '<p>' + this.esc(aiData.fixSuggestion) + '</p>'
-        + this.buildFixControlsHtml()
-        + '</div>'
-        + '</div>';
+  private buildAnalysisContentHtml(error: ErrorAnalysisResult, aiData: AiAnalysisViewData): string {
+    let kwPills = '';
+    for (const kw of aiData.keywords) {
+      kwPills += '<span class="keyword-badge" data-en="' + this.esc(kw.en) + '" data-cn="' + this.esc(kw.cn) + '">'
+        + '<span class="kw-en">' + this.esc(kw.en) + '</span> ↔ '
+        + '<span class="kw-cn">' + this.esc(kw.cn) + '</span>'
+        + '</span>';
     }
 
-    // Loading state
-    return '<div class="analysis-loading"><div class="spinner"></div><p>正在调用 AI 分析...</p></div>';
+    // Make file:line references clickable in analysis text
+    const analysisHtml = this.makeFileLinksClickable(this.esc(aiData.analysis));
+    const fixSuggestionHtml = this.makeFileLinksClickable(this.esc(aiData.fixSuggestion));
+
+    return '<div class="analysis-content">'
+      + '<div class="error-pair">'
+      + '<div class="error-original"><h4>原始报错</h4>'
+      + '<pre class="error-text">'
+      + '<div class="error-type">' + this.esc(error.errorType) + '</div>'
+      + '<div class="error-msg">' + this.esc(error.errorMessage) + '</div>'
+      + '</pre></div>'
+      + '<div class="error-translated"><h4>中文翻译</h4>'
+      + '<div class="translated-text">' + aiData.translation + '</div>'
+      + '</div></div>'
+      + (kwPills ? '<div class="keyword-pills">' + kwPills + '</div>' : '')
+      + '<div class="section-card"><h4>错误分析</h4>'
+      + '<p class="analysis-text">' + analysisHtml + '</p></div>'
+      + '<div class="section-card fix-card"><h4>修复建议</h4>'
+      + '<p class="analysis-text">' + fixSuggestionHtml + '</p>'
+      + this.buildFixControlsHtml()
+      + '</div>'
+      + '</div>';
   }
 
   private buildFixControlsHtml(): string {
@@ -392,6 +428,159 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
         + '</div>';
     }
     return '<div class="fix-controls fix-idle"><button class="fix-btn primary" onclick="startFix()">一键修复</button></div>';
+  }
+
+  private buildChatHtml(): string {
+    const s = this.chatSnapshot;
+    if (!s) return '';
+
+    let chips = '';
+    if (s.contextFiles.length === 0) {
+      chips = '<span class="chat-files-empty">暂无上下文文件，可点击“添加文件”</span>';
+    } else {
+      for (const f of s.contextFiles) {
+        const flags: string[] = [];
+        if (f.truncated) flags.push('已截断');
+        if (f.changed) flags.push('已变化');
+        if (f.skipped) flags.push('超出预算');
+        if (f.unavailable) flags.push('不可用');
+        const flagHtml = flags.length
+          ? ' <span class="chip-flag">' + flags.map(x => this.esc(x)).join(' · ') + '</span>'
+          : '';
+        const sourceLabel = f.source === 'auto' ? '自动' : '新增';
+        const chipClass = (f.skipped ? ' skipped' : '') + (f.unavailable ? ' unavailable' : '');
+        const fileName = f.path.split(/[\\/]/).pop() || f.path;
+        chips += `<span class="chat-chip${chipClass}" title="${this.esc(f.path)}">`
+          + `<span class="chip-name">${this.esc(fileName)}</span>`
+          + `<span class="chip-meta">${sourceLabel} · L${f.startLine}-${f.endLine}</span>`
+          + flagHtml
+          + `<button class="chip-remove" onclick="chatAction('removeFile','${this.esc(f.id)}')" title="移除">×</button>`
+          + '</span>';
+      }
+    }
+
+    let messages = '';
+    for (const m of s.messages) {
+      if (m.role === 'notice') {
+        messages += '<div class="chat-msg notice">' + this.esc(m.content) + '</div>';
+      } else {
+        const label = m.role === 'user' ? '你' : 'AI';
+        messages += `<div class="chat-msg ${m.role}">`
+          + `<div class="chat-msg-label">${label}</div>`
+          + '<div class="chat-msg-body">' + this.renderChatMarkdown(m.content) + '</div>'
+          + '</div>';
+      }
+    }
+    if (s.error) {
+      messages += '<div class="chat-msg notice error">' + this.esc(s.error) + '</div>';
+    }
+    if (messages === '') {
+      messages = '<div class="chat-msg notice">还没有消息，可以直接追问报错原因。</div>';
+    }
+
+    const busy = s.sending || s.generatingPatch;
+    const patchDisabled = busy || s.messages.length === 0 ? 'disabled' : '';
+    const sendDisabled = busy ? 'disabled' : '';
+    const sendLabel = s.generatingPatch ? '生成补丁中...' : (s.sending ? '思考中...' : '发送');
+
+    return `<div class="section-card chat-card">
+      <div class="chat-header">
+        <h4>错误分析对话</h4>
+        <div class="chat-actions">
+          <button class="chat-btn" onclick="chatAction('newChatSession')" ${busy ? 'disabled' : ''}>新开会话</button>
+          <button class="chat-btn primary" onclick="chatAction('generatePatch')" ${patchDisabled}>生成修复补丁</button>
+        </div>
+      </div>
+      <div class="chat-files">
+        <button class="chat-btn" onclick="chatAddFiles()" ${busy ? 'disabled' : ''}>添加文件</button>
+        <button class="chat-btn" onclick="chatAction('restoreDefaults')" ${busy ? 'disabled' : ''}>恢复默认</button>
+        <div class="chat-chips">${chips}</div>
+      </div>
+      <div class="chat-messages" id="chatMessages">${messages}</div>
+      <div class="chat-input-row">
+        <textarea id="chatInput" placeholder="追问具体出错原因或行号..." ${sendDisabled}></textarea>
+        <button class="chat-btn primary" onclick="chatSend()" ${sendDisabled}>${sendLabel}</button>
+      </div>
+    </div>`;
+  }
+
+  private renderChatMarkdown(text: string): string {
+    const escaped = this.esc(text);
+    const parts = escaped.split(/```/);
+    let html = '';
+    for (let i = 0; i < parts.length; i++) {
+      if (i % 2 === 1) {
+        // Fenced code block: drop an optional language tag on the first line.
+        const body = parts[i].replace(/^[a-zA-Z0-9_+-]+\n/, '');
+        html += '<pre class="chat-code">' + body + '</pre>';
+      } else {
+        html += this.renderChatInlineBlock(parts[i]);
+      }
+    }
+    return html;
+  }
+
+  private renderChatInlineBlock(block: string): string {
+    const lines = block.split('\n');
+    const out: string[] = [];
+    let listOpen: 'ul' | 'ol' | null = null;
+    const closeList = () => {
+      if (listOpen) {
+        out.push('</' + listOpen + '>');
+        listOpen = null;
+      }
+    };
+
+    for (const rawLine of lines) {
+      const heading = rawLine.match(/^\s{0,3}(#{1,4})\s+(.*)$/);
+      if (heading) {
+        closeList();
+        out.push('<h4 class="chat-h">' + this.renderChatInline(heading[2]) + '</h4>');
+        continue;
+      }
+      const ul = rawLine.match(/^\s*[-*]\s+(.*)$/);
+      if (ul) {
+        if (listOpen !== 'ul') {
+          closeList();
+          out.push('<ul>');
+          listOpen = 'ul';
+        }
+        out.push('<li>' + this.renderChatInline(ul[1]) + '</li>');
+        continue;
+      }
+      const ol = rawLine.match(/^\s*(\d+)\.\s+(.*)$/);
+      if (ol) {
+        if (listOpen !== 'ol') {
+          closeList();
+          out.push('<ol>');
+          listOpen = 'ol';
+        }
+        out.push('<li>' + this.renderChatInline(ol[2]) + '</li>');
+        continue;
+      }
+      closeList();
+      if (rawLine.trim() === '') {
+        out.push('<div class="chat-p"></div>');
+      } else {
+        out.push('<p class="chat-p">' + this.renderChatInline(rawLine) + '</p>');
+      }
+    }
+    closeList();
+    return out.join('');
+  }
+
+  private renderChatInline(text: string): string {
+    let html = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    return this.makeBroadFileLinksClickable(html);
+  }
+
+  /** Broader file:line linking for chat replies (config and code files alike). */
+  private makeBroadFileLinksClickable(text: string): string {
+    return text.replace(
+      /([A-Za-z0-9_./\\-]+\.(?:py|js|ts|json|ya?ml|toml|env|cfg|ini|txt|md|html|css)):(\d+)/g,
+      '<a href="#" class="file-link" data-file="$1" data-line="$2">$1:$2</a>'
+    );
   }
 
   /**
@@ -491,6 +680,42 @@ h3{margin-bottom:8px;font-size:14px;}h4{font-size:11px;text-transform:uppercase;
 .terminal-text{font-family:Consolas,Monaco,monospace;font-size:11px;line-height:1.5;color:#ce9178;max-height:200px;overflow-y:auto;white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,0.3);padding:8px;border-radius:4px;margin:0 4px 4px;}
 .analysis-loading{text-align:center;padding:40px;color:var(--text-muted);}
 .analysis-error{background:var(--bg-card);border:1px solid var(--error);border-radius:6px;padding:10px;font-size:12px;color:var(--error);}
+.chat-card{display:flex;flex-direction:column;gap:8px;border-left:3px solid var(--accent);}
+.chat-header{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+.chat-header h4{margin:0;text-transform:none;color:var(--text);}
+.chat-actions{display:flex;gap:6px;}
+.chat-btn{background:var(--bg-card);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:4px 8px;font-size:11px;cursor:pointer;}
+.chat-btn:hover:not(:disabled){border-color:var(--accent);color:#fff;}
+.chat-btn:disabled{opacity:.45;cursor:default;}
+.chat-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;}
+.chat-files{display:flex;flex-direction:column;gap:6px;}
+.chat-chips{display:flex;flex-wrap:wrap;gap:6px;}
+.chat-chip{display:inline-flex;align-items:center;gap:5px;background:rgba(0,122,204,.08);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:10px;max-width:100%;}
+.chat-chip.skipped,.chat-chip.unavailable{opacity:.55;}
+.chip-name{color:#569cd6;font-family:Consolas,Monaco,monospace;white-space:nowrap;}
+.chip-meta{color:var(--text-muted);white-space:nowrap;}
+.chip-flag{color:#d7ba7d;}
+.chip-remove{background:transparent;border:none;color:var(--text-muted);cursor:pointer;font-size:12px;line-height:1;padding:0 2px;}
+.chip-remove:hover{color:#f44747;}
+.chat-files-empty{color:var(--text-muted);font-size:11px;}
+.chat-messages{display:flex;flex-direction:column;gap:8px;max-height:320px;overflow-y:auto;padding-right:2px;}
+.chat-msg{display:flex;flex-direction:column;gap:2px;}
+.chat-msg-label{font-size:10px;color:var(--text-muted);}
+.chat-msg.user .chat-msg-label{text-align:right;}
+.chat-msg-body{background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12px;line-height:1.6;word-break:break-word;}
+.chat-msg.user .chat-msg-body{background:rgba(0,122,204,.10);border-color:rgba(0,122,204,.35);}
+.chat-msg.notice{text-align:center;color:var(--text-muted);font-size:11px;}
+.chat-msg.notice.error{color:#f48771;}
+.chat-msg-body p{margin:0 0 4px;}.chat-msg-body p:last-child{margin-bottom:0;}
+.chat-msg-body ul,.chat-msg-body ol{margin:4px 0 4px 18px;}
+.chat-msg-body li{margin:2px 0;}
+.chat-msg-body code{font-family:Consolas,Monaco,monospace;font-size:11px;background:rgba(0,0,0,.3);padding:1px 3px;border-radius:3px;}
+.chat-code{font-family:Consolas,Monaco,monospace;font-size:11px;line-height:1.5;background:rgba(0,0,0,.35);border:1px solid var(--border);border-radius:4px;padding:6px 8px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;margin:4px 0;}
+.chat-h{margin:6px 0 2px;}
+.chat-p{margin:2px 0;}
+.chat-input-row{display:flex;gap:6px;align-items:flex-end;}
+.chat-input-row textarea{flex:1;min-height:56px;resize:vertical;background:rgba(0,0,0,.25);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:6px;font-family:inherit;font-size:12px;}
+.chat-input-row textarea:focus{outline:none;border-color:var(--accent);}
 .context-empty{color:var(--text-muted);font-size:11px;padding:8px 0;}
 .spinner{width:24px;height:24px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 12px;}
 @keyframes spin{to{transform:rotate(360deg);}}
@@ -611,6 +836,35 @@ ${terminalHtml}
   document.querySelectorAll('.file-toggle.open').forEach(function(el) {
     el.closest('.file-header')?.click();
   });
+
+  // Error analysis chat
+  window.chatSend = function() {
+    const input = document.getElementById('chatInput');
+    if (!input) return;
+    const content = input.value;
+    if (!content.trim()) return;
+    input.value = '';
+    vscode.postMessage({ type: 'chatSend', content: content });
+  };
+
+  window.chatAction = function(action, fileId) {
+    vscode.postMessage({ type: 'chatAction', action: action, fileId: fileId });
+  };
+
+  window.chatAddFiles = function() {
+    vscode.postMessage({ type: 'chatAddFiles' });
+  };
+
+  document.addEventListener('keydown', function(e) {
+    const target = e.target;
+    if (e.key === 'Enter' && !e.shiftKey && target && target.id === 'chatInput') {
+      e.preventDefault();
+      window.chatSend();
+    }
+  });
+
+  const chatMessagesEl = document.getElementById('chatMessages');
+  if (chatMessagesEl) chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 })();
 </script>
 </body>

@@ -156,6 +156,11 @@
           "type": "boolean",
           "default": true,
           "description": "启用修复建议卡片的一键修复功能"
+        },
+        "errAnalyst.enableChat": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用修复建议卡片下方的错误分析对话功能"
         }
       }
     }

@@ -50,6 +50,8 @@ const llmProvider_1 = require("./llmProvider");
 const session_1 = require("./fix/session");
 const decoration_1 = require("./fix/decoration");
 const prompt_1 = require("./fix/prompt");
+const session_2 = require("./chat/session");
+const prompt_2 = require("./chat/prompt");
 const configWizard_1 = require("./ui/configWizard");
 const configManager_1 = require("./configManager");
 let terminalWatcher;
@@ -60,6 +62,7 @@ let fixSessionManager;
 let errorMemory;
 let categoryClassifier;
 let contextBuilder;
+let chatSessionManager;
 let lastError = null;
 let configWizard;
 let configManager;
@@ -91,6 +94,15 @@ function activate(context) {
         onFixAction: (action, hunkId) => {
             handleFixAction(action, hunkId);
         },
+        onChatSend: (content) => {
+            void runChatTurn(content);
+        },
+        onChatAction: (action, fileId) => {
+            handleChatAction(action, fileId);
+        },
+        onChatAddFiles: () => {
+            void pickChatFiles();
+        },
     });
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(analysisWebview_1.AnalysisViewProvider.viewType, analysisViewProvider));
     fixDecorationManager = new decoration_1.FixDecorationManager();
@@ -107,6 +119,7 @@ function activate(context) {
         if (fixSessionManager?.active)
             void fixSessionManager.refresh();
     }));
+    chatSessionManager = new session_2.ChatSessionManager((snapshot) => analysisViewProvider.showChat(snapshot));
     hoverProvider = new hoverProvider_1.ErrorHoverProvider();
     // Initialize category classifier from the bundled YAML rules
     categoryClassifier = new categoryClassifier_1.CategoryClassifier();
@@ -130,6 +143,7 @@ function activate(context) {
         result.category = category;
         // 2. Show analysis panel immediately with parsed data
         analysisViewProvider.show(result);
+        chatSessionManager.startForError([]);
         hoverProvider.showHover(result);
         // 3. Auto-analyze with AI
         if (config_1.Config.getInstance().getAutoAnalyze()) {
@@ -194,6 +208,7 @@ function registerManifestCommands(context) {
                 lastError = result;
                 fixSessionManager.end();
                 analysisViewProvider.show(result);
+                chatSessionManager.startForError([]);
                 await autoAnalyze(result, category);
             }
         },
@@ -254,6 +269,7 @@ function registerManifestCommands(context) {
                 fixSuggestion: entry.fixSuggestion,
             }, { fromCache: true, cachedAt: entry.lastSeen });
             analysisViewProvider.showContext(result.fullTraceback, context);
+            chatSessionManager.startForError(contextToAutoFiles(context));
         },
         'errAnalyst.setProvider': () => configManager.setProvider(),
         'errAnalyst.setActiveProvider': () => configManager.setActiveProvider(),
@@ -299,6 +315,189 @@ function handleFixAction(action, hunkId) {
                 void fixSessionManager.openHunk(hunkId);
             break;
     }
+}
+function handleChatAction(action, fileId) {
+    switch (action) {
+        case 'newChatSession':
+            void vscode.window.showWarningMessage('确定要清空当前对话吗？修复会话也会结束，对话上下文文件会保留。', { modal: true }, '新开会话').then(choice => {
+                if (choice === '新开会话') {
+                    fixSessionManager.end();
+                    chatSessionManager.newSession();
+                }
+            });
+            break;
+        case 'generatePatch':
+            void runChatFixFlow();
+            break;
+        case 'removeFile':
+            if (fileId)
+                chatSessionManager.removeFile(fileId);
+            break;
+        case 'restoreDefaults':
+            chatSessionManager.restoreDefaults();
+            break;
+    }
+}
+async function pickChatFiles() {
+    const uris = await vscode.window.showOpenDialog({
+        canSelectMany: true,
+        openLabel: '添加到对话上下文',
+        filters: {
+            '文本文件': ['py', 'js', 'ts', 'json', 'yaml', 'yml', 'toml', 'env', 'txt', 'md', 'cfg', 'ini', 'log', 'csv', 'sh'],
+            '所有文件': ['*'],
+        },
+    });
+    if (!uris || uris.length === 0)
+        return;
+    const results = await chatSessionManager.addUserFiles(uris.map(u => u.fsPath));
+    const errors = results.filter(r => !r.ok);
+    if (errors.length > 0) {
+        vscode.window.showWarningMessage('ErrAnalyst: ' + errors.map(e => `${e.path}: ${e.error || '未知错误'}`).join('；'));
+    }
+}
+async function runChatTurn(content) {
+    const text = content.trim();
+    if (!text || chatSessionManager.isBusy())
+        return;
+    if (!lastError)
+        return;
+    const config = config_1.Config.getInstance();
+    if (!config.getEnableChat()) {
+        vscode.window.showInformationMessage('ErrAnalyst: 错误分析对话已在设置中关闭');
+        return;
+    }
+    const provider = await config.getActiveProvider();
+    if (!provider) {
+        chatSessionManager.setError('未配置可用的 AI Provider，请先完成配置');
+        return;
+    }
+    const llm = (0, llmProvider_1.createProvider)(provider);
+    if (!llm) {
+        chatSessionManager.setError('AI Provider 初始化失败');
+        return;
+    }
+    chatSessionManager.addUserMessage(text);
+    chatSessionManager.setSending(true);
+    chatSessionManager.setError(null);
+    try {
+        const traceback = parsedTracebackFromResult(lastError);
+        const payload = chatSessionManager.buildContextPayload();
+        const history = chatSessionManager.getLlmHistory(true);
+        const messages = (0, prompt_2.buildChatMessages)({
+            traceback,
+            analysisText: analysisTextFromResult(lastError),
+            contextPayload: payload.payload,
+            history,
+            question: text,
+        });
+        const response = await llm.chat({ messages, timeout: config.getAiTimeout() });
+        if (response.success) {
+            chatSessionManager.appendAssistantMessage(response.content);
+        }
+        else {
+            chatSessionManager.setError('AI 请求失败: ' + (response.error || '未知错误'));
+        }
+    }
+    catch (e) {
+        chatSessionManager.setError(e instanceof Error ? e.message : String(e));
+    }
+    finally {
+        chatSessionManager.setSending(false);
+    }
+}
+async function runChatFixFlow() {
+    const config = config_1.Config.getInstance();
+    if (!config.getEnableChat()) {
+        vscode.window.showInformationMessage('ErrAnalyst: 错误分析对话已在设置中关闭');
+        return;
+    }
+    if (!config.getEnableOneClickFix()) {
+        vscode.window.showInformationMessage('ErrAnalyst: 一键修复功能已在设置中关闭，对话补丁使用同一确认流程');
+        return;
+    }
+    if (!lastError)
+        return;
+    const provider = await config.getActiveProvider();
+    if (!provider) {
+        chatSessionManager.setError('未配置可用的 AI Provider，请先完成配置');
+        return;
+    }
+    const llm = (0, llmProvider_1.createProvider)(provider);
+    if (!llm) {
+        chatSessionManager.setError('AI Provider 初始化失败');
+        return;
+    }
+    chatSessionManager.setGeneratingPatch(true);
+    chatSessionManager.setError(null);
+    try {
+        const traceback = parsedTracebackFromResult(lastError);
+        const payload = chatSessionManager.buildContextPayload();
+        const history = chatSessionManager.getLlmHistory();
+        const prompts = (0, prompt_1.buildChatFixPrompts)(traceback, analysisTextFromResult(lastError), payload.payload, history.filter(m => m.role !== 'notice').map(m => ({ role: m.role, content: m.content })));
+        const response = await llm.analyze({
+            systemPrompt: prompts.systemPrompt,
+            userPrompt: prompts.userPrompt,
+            timeout: config.getAiTimeout(),
+        });
+        if (!response.success) {
+            chatSessionManager.setError('AI 请求失败: ' + (response.error || '未知错误'));
+            return;
+        }
+        const allowedFiles = chatSessionManager.getAllowedFilePaths();
+        const parsed = (0, prompt_1.parseFixResponseWithReason)(response.content, allowedFiles);
+        if (parsed.hunks.length === 0) {
+            chatSessionManager.appendAssistantMessage(parsed.reason || 'AI 未给出可应用的修改：根因可能不在当前代码中，或无法从现有上下文确定。');
+            return;
+        }
+        const hunks = parsed.hunks.map((input, i) => ({
+            id: `hunk-${Date.now()}-${i}`,
+            file: input.file,
+            reason: input.reason,
+            oldLines: input.oldLines,
+            newLines: input.newLines,
+            status: 'pending',
+        }));
+        await fixSessionManager.start(lastError, hunks);
+        chatSessionManager.addNotice(`已生成 ${hunks.length} 处修改，可在上方修复建议卡片逐处确认`);
+    }
+    catch (e) {
+        chatSessionManager.setError(e instanceof Error ? e.message : String(e));
+    }
+    finally {
+        chatSessionManager.setGeneratingPatch(false);
+    }
+}
+function parsedTracebackFromResult(result) {
+    return {
+        errorType: result.errorType,
+        errorMessage: result.errorMessage,
+        filePath: result.filePath,
+        lineNumber: result.lineNumber,
+        stackFrames: result.stackFrames || [],
+        fullTraceback: result.fullTraceback || '',
+        chain: result.chain || [],
+    };
+}
+function analysisTextFromResult(result) {
+    return [
+        result.translation ? '翻译：' + result.translation : '',
+        result.analysis ? '分析：' + result.analysis : '',
+        result.fixSuggestion ? '文字建议：' + result.fixSuggestion : '',
+    ].filter(Boolean).join('\n\n');
+}
+function contextToAutoFiles(context) {
+    const files = [
+        context.mainFile,
+        ...context.stackFiles,
+        ...context.configFiles,
+        ...context.siblingFiles,
+    ].filter((f) => !!f);
+    return files.map(f => ({
+        path: f.path,
+        startLine: f.startLine,
+        endLine: f.endLine,
+        content: f.content,
+    }));
 }
 async function runFixFlow() {
     const config = config_1.Config.getInstance();
@@ -399,6 +598,7 @@ async function autoAnalyze(result, category, options) {
     };
     const context = contextBuilder.build(parsedTraceback, workspaceFolders);
     analysisViewProvider.showContext(result.fullTraceback, context);
+    chatSessionManager.updateAutoFiles(contextToAutoFiles(context));
     // ── Build AI context ──
     const provider = await config.getActiveProvider();
     console.log('ErrAnalyst: fetching active provider...');

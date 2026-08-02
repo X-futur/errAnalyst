@@ -1,4 +1,4 @@
-export { LlmRequest, LlmResponse, LlmProvider } from './types';
+export { ChatRequest, ChatTurn, LlmRequest, LlmResponse, LlmProvider } from './types';
 export { OpenAICompatibleProvider, buildAnalysisPrompts, parseAiResponse } from './openaiCompatible';
 export type { AiAnalysisResult } from './openaiCompatible';
 

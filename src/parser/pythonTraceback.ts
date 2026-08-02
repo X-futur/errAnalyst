@@ -249,19 +249,20 @@
      const causeReg = /^The above exception was the direct cause of the following exception:/;
      const contextReg = /^During handling of the above exception, another exception occurred:/;
  
-     for (const line of lines) {
-       const trimmed = line.trim();
-       if (causeReg.test(trimmed) || contextReg.test(trimmed)) {
-         // Commit the current block
-         const blockText = currentBlockLines.join('\n').trim();
-         if (blockText) {
-           blocks.push({ text: blockText, relationship: currentRelationship });
-         }
-         currentBlockLines = [];
-         currentRelationship = causeReg.test(trimmed) ? 'cause' : 'context';
-         continue;
-       }
-       currentBlockLines.push(line);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (causeReg.test(trimmed) || contextReg.test(trimmed)) {
+        // The exception above this marker is the cause/context of the next one.
+        currentRelationship = causeReg.test(trimmed) ? 'cause' : 'context';
+        // Commit the current block
+        const blockText = currentBlockLines.join('\n').trim();
+        if (blockText) {
+          blocks.push({ text: blockText, relationship: currentRelationship });
+        }
+        currentBlockLines = [];
+        continue;
+      }
+      currentBlockLines.push(line);
      }
  
      // Commit last block
@@ -347,8 +348,8 @@
          }
        }
  
-       // Check for error type at end
-       const errorMatch = line.match(/^([A-Za-z.]+(?:Error|Exception|Warning|StopIteration)):\s*(.*)/);
+      // Check for error type at end
+      const errorMatch = line.match(/^([A-Za-z0-9_.]+(?:Error|Exception|Warning|StopIteration)):\s*(.*)/);
        if (errorMatch) {
          errorType = errorMatch[1];
          errorMessage = errorMatch[2];
@@ -361,7 +362,7 @@
        for (let i = lines.length - 1; i >= 0; i--) {
          const trimmed = lines[i].trim();
          if (!trimmed) continue;
-         const m = trimmed.match(/^([A-Za-z.]+(?:Error|Exception|Warning|StopIteration)):\s*(.*)/);
+        const m = trimmed.match(/^([A-Za-z0-9_.]+(?:Error|Exception|Warning|StopIteration)):\s*(.*)/);
          if (m) {
            errorType = m[1];
            errorMessage = m[2];
@@ -418,7 +419,7 @@
          filePath = this.resolvePath(match[1], workspaceFolders);
          lineNumber = parseInt(match[2], 10);
          const rest = match[3];
-         const em = rest.match(/^([A-Za-z.]+(?:Error|Exception|Warning)):\s*(.*)/);
+        const em = rest.match(/^([A-Za-z0-9_.]+(?:Error|Exception|Warning)):\s*(.*)/);
          if (em) {
            errorType = em[1];
            errorMessage = em[2];
@@ -439,7 +440,7 @@
            filePath = this.resolvePath(fm[1], workspaceFolders);
            lineNumber = parseInt(fm[2], 10);
          }
-         const em = line.match(/^([A-Za-z.]+(?:Error|Exception|Warning|StopIteration)):\s*(.*)/);
+        const em = line.match(/^([A-Za-z0-9_.]+(?:Error|Exception|Warning|StopIteration)):\s*(.*)/);
          if (em) {
            errorType = em[1];
            errorMessage = em[2];
@@ -458,7 +459,7 @@
        for (let i = lines.length - 1; i >= 0; i--) {
          const trimmed = lines[i].trim();
          if (!trimmed) continue;
-         const em = trimmed.match(/^([A-Za-z.]+(?:Error|Exception|Warning|StopIteration)):\s*(.*)/);
+        const em = trimmed.match(/^([A-Za-z0-9_.]+(?:Error|Exception|Warning|StopIteration)):\s*(.*)/);
          if (em) {
            errorType = em[1];
            errorMessage = em[2];

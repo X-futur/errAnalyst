@@ -135,6 +135,10 @@ class Config {
         return vscode.workspace.getConfiguration('errAnalyst')
             .get('enableOneClickFix', true);
     }
+    getEnableChat() {
+        return vscode.workspace.getConfiguration('errAnalyst')
+            .get('enableChat', true);
+    }
 }
 exports.Config = Config;
 //# sourceMappingURL=config.js.map

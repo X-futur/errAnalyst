@@ -1,7 +1,7 @@
 import * as https from 'https';
 import * as http from 'http';
 import { URL } from 'url';
-import { LlmRequest, LlmResponse, LlmProvider } from './types';
+import { ChatRequest, ChatTurn, LlmRequest, LlmResponse, LlmProvider } from './types';
 import { LlmProviderConfig } from '../config';
 import type { ParsedTraceback, ErrorCategory } from '../parser';
 import type { BuiltContext } from '../context/contextBuilder';
@@ -17,17 +17,28 @@ export class OpenAICompatibleProvider implements LlmProvider {
 
   async analyze(request: LlmRequest): Promise<LlmResponse> {
     const { systemPrompt, userPrompt, timeout } = request;
-    const baseUrl = this.config.baseUrl.replace(/\/+$/, '');
-    const url = new URL(`${baseUrl}/chat/completions`);
     const safeSystemPrompt = systemPrompt && systemPrompt.trim() ? systemPrompt : '你是 ErrAnalyst 错误分析助手。';
     const safeUserPrompt = userPrompt && userPrompt.trim() ? userPrompt : '请分析本次报错并给出修复建议。';
+    return this.complete([
+      { role: 'system', content: safeSystemPrompt },
+      { role: 'user', content: safeUserPrompt },
+    ], timeout);
+  }
+
+  async chat(request: ChatRequest): Promise<LlmResponse> {
+    const messages = request.messages.length > 0
+      ? request.messages
+      : [{ role: 'user' as const, content: '你好，请围绕当前报错继续分析。' }];
+    return this.complete(messages, request.timeout);
+  }
+
+  private complete(messages: ChatTurn[], timeout: number): Promise<LlmResponse> {
+    const baseUrl = this.config.baseUrl.replace(/\/+$/, '');
+    const url = new URL(`${baseUrl}/chat/completions`);
 
     const body = JSON.stringify({
       model: this.config.model,
-      messages: [
-        { role: 'system', content: safeSystemPrompt },
-        { role: 'user', content: safeUserPrompt }
-      ],
+      messages,
       temperature: 0.1,
       max_tokens: 4096
     });
@@ -109,7 +120,7 @@ function buildSystemPrompt(category: ErrorCategory): string {
 - translation: string（中文翻译，用 {{keyword}} 包裹英文术语）
 - keywords: [{cn: string, en: string}]（中英术语对照表）
 - analysis: string（中文根因分析，必须引用具体行号，格式为 "文件:行号"）
-- fixSuggestion: string（中文修复建议，纯文字描述，不需要代码）
+- fixSuggestion: string（中文修复建议，纯文字描述，不需要代码；必须点名问题文件、给出“文件:行号”引用和分步操作；如果根因在代码之外（环境、服务、配置未就绪等），说明外部原因并给出用户操作步骤）
 ${category === 'UNKNOWN' ? '- category: string（你判断的错误类别，可选值：COMPILATION_ERROR/DEPENDENCY_ERROR/SYSTEM_ERROR/RUNTIME_ERROR/UNKNOWN）\n' : ''}
 注意：只返回 JSON，不要包含其他文字。`;
 }
@@ -219,7 +230,7 @@ function buildUserPrompt(
   lines.push('1. translation: Chinese translation of the error message, wrap English terms with {{keyword}} markers');
   lines.push('2. keywords: Chinese-English term mapping table');
   lines.push('3. analysis: Root cause analysis in Chinese, MUST reference specific file:line numbers from the Source Context or Parsed Error Data');
-  lines.push('4. fixSuggestion: Fix suggestion in Chinese, text description only, no code');
+  lines.push('4. fixSuggestion: Fix suggestion in Chinese, text description only, no code; must name the problem file, cite "file:line" references, and give step-by-step actions; if the root cause is outside the code (environment/service/config not ready), explain the external cause and give operational steps only');
   if (category === 'UNKNOWN') {
     lines.push('5. category: Your best guess for the error category');
   }

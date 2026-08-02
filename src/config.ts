@@ -151,4 +151,9 @@ export class Config {
     return vscode.workspace.getConfiguration('errAnalyst')
       .get<boolean>('enableOneClickFix', true);
   }
+
+  getEnableChat(): boolean {
+    return vscode.workspace.getConfiguration('errAnalyst')
+      .get<boolean>('enableChat', true);
+  }
 }
