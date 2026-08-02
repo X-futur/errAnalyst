@@ -269,9 +269,11 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
 
   private buildStackHtml(): string {
     if (!this.currentError || this.currentError.stackFrames.length === 0) return '';
-    let html = '';
+    let html = '<div class="stack-header" onclick="toggleStack(this)">'
+      + '<span class="file-toggle">▶</span><span>调用栈</span>'
+      + '</div>';
+    html += '<div class="stack-content" style="display:none">';
     // Primary stack
-    html += '<h4>调用栈</h4>';
     for (const frame of this.currentError.stackFrames) {
       const codeLine = frame.codeLine
         ? '<div class="code-line">' + this.esc(frame.codeLine) + '</div>'
@@ -299,6 +301,7 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
         }
       }
     }
+    html += '</div>';
     return '<div class="stack-section">' + html + '</div>';
   }
 
@@ -454,7 +457,10 @@ h3{margin-bottom:8px;font-size:14px;}h4{font-size:11px;text-transform:uppercase;
 .file-path{color:var(--text-muted);font-size:10px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .file-lines{color:var(--text-muted);font-size:10px;white-space:nowrap;}
 .file-content pre{font-family:Consolas,Monaco,monospace;font-size:11px;line-height:1.5;padding:8px 10px;background:rgba(0,0,0,0.2);overflow-x:auto;white-space:pre;color:var(--text);margin:0;}
-.stack-section{background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:12px;}
+.stack-section{background:var(--bg-card);border:1px solid var(--border);border-radius:6px;margin-bottom:12px;overflow:hidden;}
+.stack-header{padding:6px 10px;cursor:pointer;display:flex;align-items:center;gap:6px;user-select:none;font-size:12px;}
+.stack-header:hover{background:rgba(255,255,255,0.03);}
+.stack-content{padding:0 10px 10px;}
 .stack-frame{padding:3px 0;border-bottom:1px solid var(--border);font-family:Consolas,Monaco,monospace;font-size:12px;}
 .stack-frame:last-child{border-bottom:none;}
 .chain-header{font-size:11px;color:var(--text-muted);padding:6px 0 2px;font-style:italic;border-top:1px dashed var(--border);margin-top:4px;}
@@ -553,6 +559,19 @@ ${terminalHtml}
 
   // Toggle terminal section
   window.toggleTerminal = function(el) {
+    const content = el.nextElementSibling;
+    const toggle = el.querySelector('.file-toggle');
+    if (content.style.display === 'none' || !content.style.display) {
+      content.style.display = 'block';
+      toggle.classList.add('open');
+    } else {
+      content.style.display = 'none';
+      toggle.classList.remove('open');
+    }
+  };
+
+  // Toggle stack section
+  window.toggleStack = function(el) {
     const content = el.nextElementSibling;
     const toggle = el.querySelector('.file-toggle');
     if (content.style.display === 'none' || !content.style.display) {
