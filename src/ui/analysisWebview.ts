@@ -58,7 +58,7 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly handlers: AnalysisViewHandlers,
-  ) {}
+  ) { }
 
   resolveWebviewView(
     webviewView: vscode.WebviewView,
@@ -249,8 +249,8 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
 
     return '<div class="error-header">'
       + `<div class="error-type-row">`
-      + `<div class="error-type-chip">错误类型 <b>${this.esc(error.errorType)}</b></div>`
-      + `<button class="reanalyze-btn" onclick="reanalyze()" title="重新 AI 分析">↻ 重新 AI 分析</button>`
+      + `<div class="error-type-chip"><h3>${this.esc(error.errorType)}</h3></div>`
+      + `<button class="reanalyze-btn" onclick="reanalyze()" title="重新 AI 分析">↻</button>`
       + `</div>`
       + this.buildCategoryHtml()
       + pairHtml
@@ -369,7 +369,7 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
     if (!stackContent && !terminalContent && !contextContent) return '';
 
     let html = '<div class="source-group">';
-    html += '<div class="source-group-label">源信息</div>';
+    html += '<div class="source-group-label"><h3>源信息</h3></div>';
 
     if (stackContent) {
       html += '<div class="source-item">'
@@ -420,9 +420,9 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
     const fixSuggestionHtml = this.makeFileLinksClickable(this.esc(aiData.fixSuggestion));
 
     return '<div class="analysis-content">'
-      + '<div class="section-card"><h4>错误分析</h4>'
+      + '<div class="section-card"><h3>错误分析</h3>'
       + '<p class="analysis-text">' + analysisHtml + '</p></div>'
-      + '<div class="section-card fix-card"><h4>修复建议</h4>'
+      + '<div class="section-card fix-card"><h3>修复建议</h3>'
       + '<p class="analysis-text">' + fixSuggestionHtml + '</p>'
       + this.buildFixControlsHtml()
       + '</div>'
@@ -452,7 +452,7 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
           + `<span class="fix-hunk-status">${statusLabel[h.status] || h.status}</span>`
           + (h.status === 'pending'
             ? `<button class="fix-mini-btn" onclick="fixAction('acceptFixHunk','${h.id}')">接受</button>`
-              + `<button class="fix-mini-btn reject" onclick="fixAction('rejectFixHunk','${h.id}')">拒绝</button>`
+            + `<button class="fix-mini-btn reject" onclick="fixAction('rejectFixHunk','${h.id}')">拒绝</button>`
             : '')
           + (h.line ? `<button class="fix-mini-btn" onclick="fixAction('openFixHunk','${h.id}')">查看</button>` : '')
           + '</div>';
@@ -517,9 +517,9 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
     if (s.error) {
       messages += '<div class="chat-msg notice error">' + this.esc(s.error) + '</div>';
     }
-    if (messages === '') {
-      messages = '<div class="chat-msg notice">还没有消息，可以直接追问报错原因。</div>';
-    }
+    // if (messages === '') {
+    //   messages = '<div class="chat-msg notice">还没有消息，可以直接追问报错原因。</div>';
+    // }
 
     const busy = s.sending || s.generatingPatch;
     const patchDisabled = busy || s.messages.length === 0 ? 'disabled' : '';
@@ -528,7 +528,7 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
 
     return `<div class="section-card chat-card">
       <div class="chat-header">
-        <h4>错误分析会话</h4>
+        <h3>错误分析会话</h3>
         <div class="chat-actions">
           <button class="icon-btn" title="新开会话" onclick="chatAction('newChatSession')" ${busy ? 'disabled' : ''}>${this.iconSvg('new')}</button>
           <button class="icon-btn primary" title="生成修复补丁" onclick="chatAction('generatePatch')" ${patchDisabled}>${this.iconSvg('patch')}</button>
@@ -536,8 +536,8 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
           <button class="icon-btn" title="恢复默认" onclick="chatAction('restoreDefaults')" ${busy ? 'disabled' : ''}>${this.iconSvg('restore')}</button>
         </div>
       </div>
-      <div class="chat-files"><div class="chat-chips">${chips}</div></div>
       <div class="chat-messages" id="chatMessages">${messages}</div>
+      <div class="chat-files"><div class="chat-chips">${chips}</div></div>
       <div class="chat-input-row">
         <textarea id="chatInput" placeholder="追问具体出错原因或行号..." ${sendDisabled}></textarea>
         <button class="chat-btn primary" onclick="chatSend()" ${sendDisabled}>${sendLabel}</button>
