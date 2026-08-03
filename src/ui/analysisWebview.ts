@@ -211,17 +211,51 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
   private updateContent(): void {
     if (!this.view || !this.currentError) return;
     const error = this.currentError;
+
+    const headerHtml = this.buildHeaderHtml();
+    const analysisHtml = this.buildAnalysisHtml();
+    const sourceInfoHtml = this.buildSourceInfoHtml();
+
+    this.view.webview.html = this.getHtmlTemplate(headerHtml, analysisHtml, sourceInfoHtml);
+  }
+
+  private buildHeaderHtml(): string {
+    const error = this.currentError;
+    if (!error) return '';
     const aiData = this.currentAiData;
 
-    const categoryHtml = this.buildCategoryHtml();
-    const codeContextHtml = this.buildCodeContextHtml();
-    const stackHtml = this.buildStackHtml();
-    const analysisHtml = this.buildAnalysisHtml();
-    const terminalHtml = this.buildTerminalHtml();
+    let kwPills = '';
+    if (aiData) {
+      for (const kw of aiData.keywords) {
+        kwPills += '<span class="keyword-badge" data-en="' + this.esc(kw.en) + '" data-cn="' + this.esc(kw.cn) + '">'
+          + '<span class="kw-en">' + this.esc(kw.en) + '</span> ↔ '
+          + '<span class="kw-cn">' + this.esc(kw.cn) + '</span>'
+          + '</span>';
+      }
+    }
 
-    this.view.webview.html = this.getHtmlTemplate(
-      error, categoryHtml, codeContextHtml, stackHtml, analysisHtml, terminalHtml
-    );
+    let pairHtml = '';
+    if (aiData) {
+      pairHtml = `<div class="error-pair">
+        <div class="error-original"><h4>原始报错</h4>`
+        + `<pre class="error-text">`
+        + `<div class="error-type">${this.esc(error.errorType)}</div>`
+        + `<div class="error-msg">${this.esc(error.errorMessage)}</div>`
+        + `</pre></div>`
+        + `<div class="error-translated"><h4>中文翻译</h4>`
+        + `<div class="translated-text">${aiData.translation}</div>`
+        + `</div></div>`;
+    }
+
+    return '<div class="error-header">'
+      + `<div class="error-type-row">`
+      + `<div class="error-type-chip">错误类型 <b>${this.esc(error.errorType)}</b></div>`
+      + `<button class="reanalyze-btn" onclick="reanalyze()" title="重新 AI 分析">↻ 重新 AI 分析</button>`
+      + `</div>`
+      + this.buildCategoryHtml()
+      + pairHtml
+      + (kwPills ? '<div class="keyword-pills">' + kwPills + '</div>' : '')
+      + '</div>';
   }
 
   private buildCategoryHtml(): string {
@@ -244,22 +278,19 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
     </div>`;
   }
 
-  private buildCodeContextHtml(): string {
+  private buildCodeContextContent(): string {
     const ctx = this.currentContext;
     if (!ctx) return '';
-    let html = '<div class="code-context-section">';
-    html += '<h4>源代码上下文</h4>';
 
     const hasFiles = ctx.mainFile
       || ctx.stackFiles.length > 0
       || ctx.configFiles.length > 0
       || ctx.siblingFiles.length > 0;
     if (!hasFiles) {
-      html += '<div class="context-empty">未找到可重建的代码上下文，文件可能已变化</div>';
-      html += '</div>';
-      return html;
+      return '<div class="context-empty">未找到可重建的代码上下文，文件可能已变化</div>';
     }
 
+    let html = '';
     if (ctx.mainFile) {
       html += this.renderFileContext(ctx.mainFile, true);
     }
@@ -272,34 +303,28 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
     for (const f of ctx.siblingFiles) {
       html += this.renderFileContext(f, false);
     }
-    html += '</div>';
     return html;
   }
 
   private renderFileContext(fc: FileContext, isMain: boolean): string {
     const label = isMain ? '主要报错文件' : (fc.path.split('/').pop() || fc.path);
     const relPath = fc.path;
-    const display = 'none';
-    const toggleClass = '';
     return `<div class="file-context ${isMain ? 'main-file' : ''}">
-      <div class="file-header" onclick="toggleFile(this)">
-        <span class="file-toggle ${toggleClass}">▶</span>
+      <div class="file-row" onclick="toggleFile(this)">
+        <span class="file-toggle">▶</span>
         <span class="file-label">${this.esc(label)}</span>
         <span class="file-path">${this.esc(relPath)}</span>
         <span class="file-lines">L${fc.startLine}-${fc.endLine}</span>
       </div>
-      <div class="file-content" style="display:${display}">
+      <div class="file-content" style="display:none">
         <pre>${this.esc(fc.content)}</pre>
       </div>
     </div>`;
   }
 
-  private buildStackHtml(): string {
+  private buildStackContent(): string {
     if (!this.currentError || this.currentError.stackFrames.length === 0) return '';
-    let html = '<div class="stack-header" onclick="toggleStack(this)">'
-      + '<span class="file-toggle">▶</span><span>调用栈</span>'
-      + '</div>';
-    html += '<div class="stack-content" style="display:none">';
+    let html = '';
     // Primary stack
     for (const frame of this.currentError.stackFrames) {
       const codeLine = frame.codeLine
@@ -328,8 +353,44 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
         }
       }
     }
+    return html;
+  }
+
+  private buildTerminalContent(): string {
+    if (!this.currentTraceback) return '';
+    const tb = this.currentTraceback.slice(0, 2500);
+    return `<pre class="terminal-text">${this.esc(tb)}${this.currentTraceback.length > 2500 ? '\n...' : ''}</pre>`;
+  }
+
+  private buildSourceInfoHtml(): string {
+    const stackContent = this.buildStackContent();
+    const terminalContent = this.buildTerminalContent();
+    const contextContent = this.buildCodeContextContent();
+    if (!stackContent && !terminalContent && !contextContent) return '';
+
+    let html = '<div class="source-group">';
+    html += '<div class="source-group-label">源信息</div>';
+
+    if (stackContent) {
+      html += '<div class="source-item">'
+        + '<div class="source-header" onclick="toggleSource(this)"><span class="file-toggle">▶</span><span>调用栈</span></div>'
+        + '<div class="source-content" style="display:none">' + stackContent + '</div>'
+        + '</div>';
+    }
+    if (terminalContent) {
+      html += '<div class="source-item">'
+        + '<div class="source-header" onclick="toggleSource(this)"><span class="file-toggle">▶</span><span>终端输出</span></div>'
+        + '<div class="source-content" style="display:none">' + terminalContent + '</div>'
+        + '</div>';
+    }
+    if (contextContent) {
+      html += '<div class="source-item">'
+        + '<div class="source-header" onclick="toggleSource(this)"><span class="file-toggle">▶</span><span>源代码上下文</span></div>'
+        + '<div class="source-content" style="display:none">' + contextContent + '</div>'
+        + '</div>';
+    }
     html += '</div>';
-    return '<div class="stack-section">' + html + '</div>';
+    return html;
   }
 
   private buildAnalysisHtml(): string {
@@ -354,29 +415,11 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
   }
 
   private buildAnalysisContentHtml(error: ErrorAnalysisResult, aiData: AiAnalysisViewData): string {
-    let kwPills = '';
-    for (const kw of aiData.keywords) {
-      kwPills += '<span class="keyword-badge" data-en="' + this.esc(kw.en) + '" data-cn="' + this.esc(kw.cn) + '">'
-        + '<span class="kw-en">' + this.esc(kw.en) + '</span> ↔ '
-        + '<span class="kw-cn">' + this.esc(kw.cn) + '</span>'
-        + '</span>';
-    }
-
     // Make file:line references clickable in analysis text
     const analysisHtml = this.makeFileLinksClickable(this.esc(aiData.analysis));
     const fixSuggestionHtml = this.makeFileLinksClickable(this.esc(aiData.fixSuggestion));
 
     return '<div class="analysis-content">'
-      + '<div class="error-pair">'
-      + '<div class="error-original"><h4>原始报错</h4>'
-      + '<pre class="error-text">'
-      + '<div class="error-type">' + this.esc(error.errorType) + '</div>'
-      + '<div class="error-msg">' + this.esc(error.errorMessage) + '</div>'
-      + '</pre></div>'
-      + '<div class="error-translated"><h4>中文翻译</h4>'
-      + '<div class="translated-text">' + aiData.translation + '</div>'
-      + '</div></div>'
-      + (kwPills ? '<div class="keyword-pills">' + kwPills + '</div>' : '')
       + '<div class="section-card"><h4>错误分析</h4>'
       + '<p class="analysis-text">' + analysisHtml + '</p></div>'
       + '<div class="section-card fix-card"><h4>修复建议</h4>'
@@ -485,23 +528,31 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
 
     return `<div class="section-card chat-card">
       <div class="chat-header">
-        <h4>错误分析对话</h4>
+        <h4>错误分析会话</h4>
         <div class="chat-actions">
-          <button class="chat-btn" onclick="chatAction('newChatSession')" ${busy ? 'disabled' : ''}>新开会话</button>
-          <button class="chat-btn primary" onclick="chatAction('generatePatch')" ${patchDisabled}>生成修复补丁</button>
+          <button class="icon-btn" title="新开会话" onclick="chatAction('newChatSession')" ${busy ? 'disabled' : ''}>${this.iconSvg('new')}</button>
+          <button class="icon-btn primary" title="生成修复补丁" onclick="chatAction('generatePatch')" ${patchDisabled}>${this.iconSvg('patch')}</button>
+          <button class="icon-btn" title="添加文件" onclick="chatAddFiles()" ${busy ? 'disabled' : ''}>${this.iconSvg('add')}</button>
+          <button class="icon-btn" title="恢复默认" onclick="chatAction('restoreDefaults')" ${busy ? 'disabled' : ''}>${this.iconSvg('restore')}</button>
         </div>
       </div>
-      <div class="chat-files">
-        <button class="chat-btn" onclick="chatAddFiles()" ${busy ? 'disabled' : ''}>添加文件</button>
-        <button class="chat-btn" onclick="chatAction('restoreDefaults')" ${busy ? 'disabled' : ''}>恢复默认</button>
-        <div class="chat-chips">${chips}</div>
-      </div>
+      <div class="chat-files"><div class="chat-chips">${chips}</div></div>
       <div class="chat-messages" id="chatMessages">${messages}</div>
       <div class="chat-input-row">
         <textarea id="chatInput" placeholder="追问具体出错原因或行号..." ${sendDisabled}></textarea>
         <button class="chat-btn primary" onclick="chatSend()" ${sendDisabled}>${sendLabel}</button>
       </div>
     </div>`;
+  }
+
+  private iconSvg(name: 'new' | 'patch' | 'add' | 'restore'): string {
+    const paths: Record<string, string> = {
+      new: '<path d="M21 12a8 8 0 0 1-8 8H4l2-3a8 8 0 1 1 15-5z"/><path d="M12 9v6M9 12h6"/>',
+      patch: '<path d="M6 2h8l4 4v16H6z"/><path d="M9 9l-2 2 2 2M15 9l2 2-2 2"/>',
+      add: '<path d="M6 2h8l4 4v16H6z"/><path d="M12 11v6M9 14h6"/>',
+      restore: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
+    };
+    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[name]}</svg>`;
   }
 
   private renderChatMarkdown(text: string): string {
@@ -594,30 +645,15 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
     );
   }
 
-  private buildTerminalHtml(): string {
-    if (!this.currentTraceback) return '';
-    const tb = this.currentTraceback.slice(0, 2500);
-    return `<div class="section-card terminal-section">
-      <div class="terminal-header" onclick="toggleTerminal(this)">
-        <span class="file-toggle">▶</span>
-        <span>终端输出</span>
-      </div>
-      <pre class="terminal-text" style="display:none">${this.esc(tb)}${this.currentTraceback.length > 2500 ? '\n...' : ''}</pre>
-    </div>`;
-  }
-
   private esc(str: string): string {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
   }
 
   private getHtmlTemplate(
-    error: ErrorAnalysisResult,
-    categoryHtml: string,
-    codeContextHtml: string,
-    stackHtml: string,
+    headerHtml: string,
     analysisHtml: string,
-    terminalHtml: string,
+    sourceInfoHtml: string,
   ): string {
     return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -625,31 +661,36 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
-:root{--bg:#1e1e1e;--bg-card:#252526;--text:#d4d4d4;--text-muted:#808080;--accent:#007acc;--border:#3c3c3c;--success:#40c060;}
+:root{--bg:var(--vscode-sideBar-background,#1e1e1e);--bg-card:var(--vscode-sideBarSectionHeader-background,#252526);--text:var(--vscode-sideBar-foreground,#d4d4d4);--text-muted:var(--vscode-descriptionForeground,#808080);--accent:var(--vscode-focusBorder,#007acc);--border:var(--vscode-panel-border,#3c3c3c);--success:var(--vscode-testing-iconPassed,#40c060);--error:var(--vscode-errorForeground,#f48771);}
 *{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);padding:10px;font-size:12px;line-height:1.5;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);padding:10px;font-size:11px;line-height:1.5;}
 h3{margin-bottom:8px;font-size:14px;}h4{font-size:11px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;color:#999;}
 .cache-badge{background:rgba(64,192,96,0.12);border:1px solid rgba(64,192,96,0.4);color:var(--success);padding:4px 8px;border-radius:4px;font-size:11px;margin-bottom:8px;}
-.toolbar{margin-bottom:10px;}
+.error-header{margin-bottom:10px;}
+.error-type-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;}
+.error-type-chip{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--text-muted);background:var(--bg-card);border:1px solid var(--border);border-radius:4px;padding:4px 8px;}
+.error-type-chip b{color:var(--text);font-family:Consolas,Monaco,monospace;font-weight:600;}
 .reanalyze-btn{background:var(--bg-card);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:4px 8px;font-size:11px;cursor:pointer;}
 .reanalyze-btn:hover{border-color:var(--accent);color:#fff;}
 .category-section{margin-bottom:10px;}
 .category-badge{padding:4px 10px;border-radius:4px;font-size:12px;font-weight:600;display:inline-block;margin-bottom:6px;}
-.code-context-section{margin-bottom:12px;}
 .file-context{background:var(--bg-card);border:1px solid var(--border);border-radius:6px;margin-bottom:6px;overflow:hidden;}
 .file-context.main-file{border-left:3px solid var(--accent);}
-.file-header{padding:6px 10px;cursor:pointer;display:flex;align-items:center;gap:6px;user-select:none;font-size:12px;}
-.file-header:hover{background:rgba(255,255,255,0.03);}
+.file-row{padding:6px 10px;cursor:pointer;display:flex;align-items:center;gap:6px;user-select:none;font-size:11px;}
+.file-row:hover{background:rgba(255,255,255,0.03);}
 .file-toggle{color:var(--text-muted);font-size:10px;transition:transform .15s;display:inline-block;}
 .file-toggle.open{transform:rotate(90deg);}
 .file-label{font-weight:600;white-space:nowrap;}
 .file-path{color:var(--text-muted);font-size:10px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .file-lines{color:var(--text-muted);font-size:10px;white-space:nowrap;}
-.file-content pre{font-family:Consolas,Monaco,monospace;font-size:11px;line-height:1.5;padding:8px 10px;background:rgba(0,0,0,0.2);overflow-x:auto;white-space:pre;color:var(--text);margin:0;}
-.stack-section{background:var(--bg-card);border:1px solid var(--border);border-radius:6px;margin-bottom:12px;overflow:hidden;}
-.stack-header{padding:6px 10px;cursor:pointer;display:flex;align-items:center;gap:6px;user-select:none;font-size:12px;}
-.stack-header:hover{background:rgba(255,255,255,0.03);}
-.stack-content{padding:0 10px 10px;}
+.file-content pre{font-family:Consolas,Monaco,monospace;font-size:10px;line-height:1.5;padding:8px 10px;background:rgba(0,0,0,0.2);overflow-x:auto;white-space:pre;color:var(--text);margin:0;}
+.source-group{background:var(--bg-card);border:1px solid var(--border);border-radius:6px;margin-top:12px;overflow:hidden;}
+.source-group-label{padding:6px 10px;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);border-bottom:1px solid var(--border);}
+.source-item{border-bottom:1px solid var(--border);}
+.source-item:last-child{border-bottom:none;}
+.source-header{padding:6px 10px;cursor:pointer;display:flex;align-items:center;gap:6px;user-select:none;font-size:11px;}
+.source-header:hover{background:rgba(255,255,255,0.03);}
+.source-content{padding:0 10px 10px;}
 .stack-frame{padding:3px 0;border-bottom:1px solid var(--border);font-family:Consolas,Monaco,monospace;font-size:12px;}
 .stack-frame:last-child{border-bottom:none;}
 .chain-header{font-size:11px;color:var(--text-muted);padding:6px 0 2px;font-style:italic;border-top:1px dashed var(--border);margin-top:4px;}
@@ -657,10 +698,9 @@ h3{margin-bottom:8px;font-size:14px;}h4{font-size:11px;text-transform:uppercase;
 .frame-file{color:#569cd6;cursor:pointer;}.frame-file:hover{text-decoration:underline;}
 .frame-line{color:#b5cea8;}.frame-func{color:#dcdcaa;}
 .code-line{color:#ce9178;padding-left:16px;margin-top:2px;font-size:11px;}
-.error-pair{display:block;margin-bottom:12px;}
+.error-pair{display:flex;gap:6px;margin-bottom:12px;}
 .error-original,.error-translated{flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:10px;min-width:0;}
-.error-translated{margin-top:8px;}
-.error-text,.translated-text{font-family:Consolas,Monaco,monospace;font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word;}
+.error-text,.translated-text{font-family:Consolas,Monaco,monospace;font-size:11px;line-height:1.6;white-space:pre-wrap;word-break:break-word;}
 .error-type{color:#f48771;font-weight:bold;margin-bottom:4px;}
 .error-msg{color:#ce9178;}
 .section-card{background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:8px;}
@@ -674,22 +714,24 @@ h3{margin-bottom:8px;font-size:14px;}h4{font-size:11px;text-transform:uppercase;
 .analysis-text{line-height:1.8;}
 .file-link{color:#569cd6;text-decoration:underline;cursor:pointer;}
 .file-link:hover{color:#75b8f0;}
-.terminal-section{margin-bottom:0;border:1px solid var(--border);}
-.terminal-header{padding:6px 10px;cursor:pointer;display:flex;align-items:center;gap:6px;user-select:none;font-size:12px;color:var(--text-muted);}
-.terminal-header:hover{background:rgba(255,255,255,0.03);}
-.terminal-text{font-family:Consolas,Monaco,monospace;font-size:11px;line-height:1.5;color:#ce9178;max-height:200px;overflow-y:auto;white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,0.3);padding:8px;border-radius:4px;margin:0 4px 4px;}
+.terminal-text{font-family:Consolas,Monaco,monospace;font-size:10px;line-height:1.5;color:#ce9178;max-height:200px;overflow-y:auto;white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,0.3);padding:8px;border-radius:4px;margin-top:4px;}
 .analysis-loading{text-align:center;padding:40px;color:var(--text-muted);}
 .analysis-error{background:var(--bg-card);border:1px solid var(--error);border-radius:6px;padding:10px;font-size:12px;color:var(--error);}
 .chat-card{display:flex;flex-direction:column;gap:8px;border-left:3px solid var(--accent);}
 .chat-header{display:flex;align-items:center;justify-content:space-between;gap:8px;}
 .chat-header h4{margin:0;text-transform:none;color:var(--text);}
 .chat-actions{display:flex;gap:6px;}
+.icon-btn{background:transparent;border:1px solid transparent;color:var(--text-muted);border-radius:4px;padding:4px;font-size:0;line-height:0;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;}
+.icon-btn:hover:not(:disabled){border-color:var(--border);color:var(--text);}
+.icon-btn.primary{color:var(--accent);}
+.icon-btn.primary:hover:not(:disabled){color:#fff;background:var(--accent);border-color:var(--accent);}
+.icon-btn:disabled{opacity:.45;cursor:default;}
 .chat-btn{background:var(--bg-card);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:4px 8px;font-size:11px;cursor:pointer;}
 .chat-btn:hover:not(:disabled){border-color:var(--accent);color:#fff;}
 .chat-btn:disabled{opacity:.45;cursor:default;}
 .chat-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;}
 .chat-files{display:flex;flex-direction:column;gap:6px;}
-.chat-chips{display:flex;flex-wrap:wrap;gap:6px;}
+.chat-chips{display:flex;flex-wrap:nowrap;gap:6px;overflow-x:auto;padding-bottom:2px;}
 .chat-chip{display:inline-flex;align-items:center;gap:5px;background:rgba(0,122,204,.08);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:10px;max-width:100%;}
 .chat-chip.skipped,.chat-chip.unavailable{opacity:.55;}
 .chip-name{color:#569cd6;font-family:Consolas,Monaco,monospace;white-space:nowrap;}
@@ -745,14 +787,10 @@ h3{margin-bottom:8px;font-size:14px;}h4{font-size:11px;text-transform:uppercase;
 </style>
 </head>
 <body>
-<h3>⚠ ${this.esc(error.errorType)}</h3>
 ${this.fromCache ? `<div class="cache-badge">来自本地缓存 · ${new Date(this.cachedAt).toLocaleString('zh-CN')}</div>` : ''}
-<div class="toolbar"><button class="reanalyze-btn" onclick="reanalyze()">↻ 重新 AI 分析</button></div>
-${categoryHtml}
+${headerHtml}
 ${analysisHtml}
-${stackHtml}
-${codeContextHtml}
-${terminalHtml}
+${sourceInfoHtml}
 <script>
 (function(){
   const vscode = acquireVsCodeApi();
@@ -782,21 +820,8 @@ ${terminalHtml}
     }
   };
 
-  // Toggle terminal section
-  window.toggleTerminal = function(el) {
-    const content = el.nextElementSibling;
-    const toggle = el.querySelector('.file-toggle');
-    if (content.style.display === 'none' || !content.style.display) {
-      content.style.display = 'block';
-      toggle.classList.add('open');
-    } else {
-      content.style.display = 'none';
-      toggle.classList.remove('open');
-    }
-  };
-
-  // Toggle stack section
-  window.toggleStack = function(el) {
+  // Toggle source info sections (调用栈 / 终端输出 / 源代码上下文)
+  window.toggleSource = function(el) {
     const content = el.nextElementSibling;
     const toggle = el.querySelector('.file-toggle');
     if (content.style.display === 'none' || !content.style.display) {
@@ -830,11 +855,6 @@ ${terminalHtml}
       const line = lineEl ? parseInt(lineEl.textContent, 10) : 1;
       vscode.postMessage({ type: 'openFile', file: text, line: line });
     }
-  });
-
-  // Auto-open any expanded file sections
-  document.querySelectorAll('.file-toggle.open').forEach(function(el) {
-    el.closest('.file-header')?.click();
   });
 
   // Error analysis chat
