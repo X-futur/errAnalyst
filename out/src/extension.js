@@ -63,6 +63,7 @@ let errorMemory;
 let categoryClassifier;
 let contextBuilder;
 let chatSessionManager;
+let activeChatAbort = null;
 let lastError = null;
 let configWizard;
 let configManager;
@@ -96,6 +97,9 @@ function activate(context) {
         },
         onChatSend: (content) => {
             void runChatTurn(content);
+        },
+        onChatStop: () => {
+            activeChatAbort?.abort();
         },
         onChatAction: (action, fileId) => {
             handleChatAction(action, fileId);
@@ -394,10 +398,13 @@ async function runChatTurn(content) {
         });
         const msgId = chatSessionManager.beginAssistantMessage();
         messageId = msgId;
+        const controller = new AbortController();
+        activeChatAbort = controller;
         const response = await llm.chat({
             messages,
             timeout: config.getAiTimeout(),
             stream: true,
+            signal: controller.signal,
             onChunk: (delta) => {
                 streamed += delta;
                 analysisViewProvider.streamChatChunk(msgId, streamed);
@@ -407,6 +414,17 @@ async function runChatTurn(content) {
             if (messageId) {
                 chatSessionManager.updateAssistantMessage(messageId, response.content || streamed);
             }
+        }
+        else if (response.aborted) {
+            if (messageId) {
+                if (streamed) {
+                    chatSessionManager.updateAssistantMessage(messageId, streamed);
+                }
+                else {
+                    chatSessionManager.removeAssistantMessage(messageId);
+                }
+            }
+            chatSessionManager.addNotice('已停止回复');
         }
         else {
             if (messageId) {
@@ -432,6 +450,7 @@ async function runChatTurn(content) {
         chatSessionManager.setError(e instanceof Error ? e.message : String(e));
     }
     finally {
+        activeChatAbort = null;
         chatSessionManager.setSending(false);
     }
 }

@@ -18,12 +18,16 @@ export interface ChatRequest {
   stream?: boolean;
   /** Called once per streamed content delta (only when stream is enabled). */
   onChunk?: (delta: string) => void;
+  /** Aborts the in-flight request; the provider resolves with aborted: true. */
+  signal?: AbortSignal;
 }
 
 export interface LlmResponse {
   content: string;
   success: boolean;
   error?: string;
+  /** True when the request was cancelled via signal before completing. */
+  aborted?: boolean;
 }
 
 export interface LlmProvider {

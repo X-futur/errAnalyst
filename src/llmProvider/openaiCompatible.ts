@@ -34,6 +34,7 @@ export class OpenAICompatibleProvider implements LlmProvider {
       messages,
       request.timeout,
       request.stream ? request.onChunk : undefined,
+      request.signal,
     );
   }
 
@@ -41,6 +42,7 @@ export class OpenAICompatibleProvider implements LlmProvider {
     messages: ChatTurn[],
     timeout: number,
     onChunk?: (delta: string) => void,
+    signal?: AbortSignal,
   ): Promise<LlmResponse> {
     const baseUrl = this.config.baseUrl.replace(/\/+$/, '');
     const url = new URL(`${baseUrl}/chat/completions`);
@@ -56,6 +58,7 @@ export class OpenAICompatibleProvider implements LlmProvider {
 
     return new Promise<LlmResponse>((resolve) => {
       let settled = false;
+      let content = '';
       const finish = (result: LlmResponse): void => {
         if (settled) return;
         settled = true;
@@ -87,7 +90,7 @@ export class OpenAICompatibleProvider implements LlmProvider {
                 finish({ content: '', success: false, error: parsed.error.message });
                 return;
               }
-              const content = parsed.choices?.[0]?.message?.content || '';
+              content = parsed.choices?.[0]?.message?.content || '';
               console.log('=== ErrAnalyst LLM 完整返回 ===');
               console.log(content);
               console.log('=== End ===');
@@ -102,7 +105,6 @@ export class OpenAICompatibleProvider implements LlmProvider {
         // Streaming (OpenAI-compatible SSE): each data line is a chat.completion.chunk.
         let buffer = '';
         let raw = '';
-        let content = '';
         let streamError: string | null = null;
         res.on('data', (chunk) => {
           const text = chunk.toString();
@@ -159,13 +161,25 @@ export class OpenAICompatibleProvider implements LlmProvider {
         });
       });
 
+      if (signal) {
+        const onAbort = () => {
+          req.destroy();
+          finish({ content, success: false, aborted: true });
+        };
+        if (signal.aborted) {
+          onAbort();
+        } else {
+          signal.addEventListener('abort', onAbort, { once: true });
+        }
+      }
+
       req.on('error', (e) => {
         finish({ content: '', success: false, error: `Request failed: ${e.message}` });
       });
 
       req.on('timeout', () => {
         req.destroy();
-        finish({ content: '', success: false, error: 'Request timeout' });
+        finish({ content, success: false, error: 'Request timeout' });
       });
 
       req.write(body);

@@ -59,9 +59,9 @@ class OpenAICompatibleProvider {
         const messages = request.messages.length > 0
             ? request.messages
             : [{ role: 'user', content: '你好，请围绕当前报错继续分析。' }];
-        return this.complete(messages, request.timeout, request.stream ? request.onChunk : undefined);
+        return this.complete(messages, request.timeout, request.stream ? request.onChunk : undefined, request.signal);
     }
-    complete(messages, timeout, onChunk) {
+    complete(messages, timeout, onChunk, signal) {
         const baseUrl = this.config.baseUrl.replace(/\/+$/, '');
         const url = new url_1.URL(`${baseUrl}/chat/completions`);
         const useStream = typeof onChunk === 'function';
@@ -74,6 +74,7 @@ class OpenAICompatibleProvider {
         });
         return new Promise((resolve) => {
             let settled = false;
+            let content = '';
             const finish = (result) => {
                 if (settled)
                     return;
@@ -104,7 +105,7 @@ class OpenAICompatibleProvider {
                                 finish({ content: '', success: false, error: parsed.error.message });
                                 return;
                             }
-                            const content = parsed.choices?.[0]?.message?.content || '';
+                            content = parsed.choices?.[0]?.message?.content || '';
                             console.log('=== ErrAnalyst LLM 完整返回 ===');
                             console.log(content);
                             console.log('=== End ===');
@@ -119,7 +120,6 @@ class OpenAICompatibleProvider {
                 // Streaming (OpenAI-compatible SSE): each data line is a chat.completion.chunk.
                 let buffer = '';
                 let raw = '';
-                let content = '';
                 let streamError = null;
                 res.on('data', (chunk) => {
                     const text = chunk.toString();
@@ -180,12 +180,24 @@ class OpenAICompatibleProvider {
                     finish({ content, success: true });
                 });
             });
+            if (signal) {
+                const onAbort = () => {
+                    req.destroy();
+                    finish({ content, success: false, aborted: true });
+                };
+                if (signal.aborted) {
+                    onAbort();
+                }
+                else {
+                    signal.addEventListener('abort', onAbort, { once: true });
+                }
+            }
             req.on('error', (e) => {
                 finish({ content: '', success: false, error: `Request failed: ${e.message}` });
             });
             req.on('timeout', () => {
                 req.destroy();
-                finish({ content: '', success: false, error: 'Request timeout' });
+                finish({ content, success: false, error: 'Request timeout' });
             });
             req.write(body);
             req.end();

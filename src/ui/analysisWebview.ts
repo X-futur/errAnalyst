@@ -39,6 +39,7 @@ interface AnalysisViewHandlers {
   onStartFix: () => void;
   onFixAction: (action: FixWebviewAction, hunkId?: string) => void;
   onChatSend: (content: string) => void;
+  onChatStop: () => void;
   onChatAction: (action: ChatWebviewAction, fileId?: string) => void;
   onChatAddFiles: () => void;
 }
@@ -175,6 +176,9 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
         if (typeof msg.content === 'string') {
           this.handlers.onChatSend(msg.content);
         }
+        break;
+      case 'chatStop':
+        this.handlers.onChatStop();
         break;
       case 'chatAction':
         this.handlers.onChatAction(msg.action, msg.fileId);
@@ -537,8 +541,11 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
 
     const busy = s.sending || s.generatingPatch;
     const patchDisabled = busy || s.messages.length === 0 ? 'disabled' : '';
-    const sendDisabled = busy ? 'disabled' : '';
-    const sendLabel = s.generatingPatch ? '生成补丁中...' : (s.sending ? '思考中...' : '发送');
+    const replying = s.sending && !s.generatingPatch;
+    const sendDisabled = s.generatingPatch ? 'disabled' : '';
+    const sendLabel = s.generatingPatch ? '生成补丁中...' : (replying ? '停止回复' : '发送');
+    const sendMode = replying ? 'stop' : 'send';
+    const sendOnClick = replying ? 'chatStop()' : 'chatSend()';
 
     return `<div class="section-card chat-card">
       <div class="chat-header">
@@ -554,7 +561,7 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
       <div class="chat-files"><div class="chat-chips">${chips}</div></div>
       <div class="chat-input-row">
         <textarea id="chatInput" placeholder="追问具体出错原因或行号..." ${sendDisabled}></textarea>
-        <button class="chat-btn primary" onclick="chatSend()" ${sendDisabled}>${sendLabel}</button>
+        <button id="chatSendBtn" class="chat-btn primary ${sendMode}" data-mode="${sendMode}" onclick="${sendOnClick}" ${sendDisabled}>${sendLabel}</button>
       </div>
     </div>`;
   }
@@ -809,6 +816,8 @@ h3{margin-bottom:8px;font-size:14px;}h4{font-size:11px;text-transform:uppercase;
 .chat-btn:hover:not(:disabled){border-color:var(--accent);color:#fff;}
 .chat-btn:disabled{opacity:.45;cursor:default;}
 .chat-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;}
+.chat-btn.primary.stop{background:var(--error,#f44747);border-color:var(--error,#f44747);}
+.chat-btn.primary.stop:hover:not(:disabled){background:#ff5f56;border-color:#ff5f56;color:#fff;}
 .chat-files{display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--border);padding-top:6px;}
 .chat-chips{display:flex;flex-wrap:nowrap;gap:6px;overflow-x:auto;padding-bottom:2px;}
 .chat-chip{display:inline-flex;align-items:center;gap:5px;background:transparent;border:1px solid var(--border);border-radius:0;padding:2px 6px;font-size:10px;max-width:100%;}
@@ -946,11 +955,19 @@ ${sourceInfoHtml}
   // Error analysis chat
   window.chatSend = function() {
     const input = document.getElementById('chatInput');
+    const btn = document.getElementById('chatSendBtn');
     if (!input) return;
+    // While the AI is replying the button switches to "stop" mode; don't
+    // submit or clear the textarea in that state (e.g. via Enter).
+    if (btn && btn.getAttribute('data-mode') === 'stop') return;
     const content = input.value;
     if (!content.trim()) return;
     input.value = '';
     vscode.postMessage({ type: 'chatSend', content: content });
+  };
+
+  window.chatStop = function() {
+    vscode.postMessage({ type: 'chatStop' });
   };
 
   window.chatAction = function(action, fileId) {
