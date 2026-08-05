@@ -253,7 +253,9 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
     return '<div class="error-header">'
       + `<div class="error-type-row">`
       + `<div class="error-type-chip"><h3>${this.esc(error.errorType)}</h3></div>`
-      + `<button class="reanalyze-btn" onclick="reanalyze()" title="重新 AI 分析">↻</button>`
+      + `<span class="tooltip-wrap align-right tooltip-below" data-tooltip="重新 AI 分析">`
+      + `<button class="reanalyze-btn" onclick="reanalyze()">↻</button>`
+      + `</span>`
       + `</div>`
       + this.buildCategoryHtml()
       + pairHtml
@@ -500,7 +502,9 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
           + `<span class="chip-name">${this.esc(fileName)}</span>`
           + `<span class="chip-meta">${sourceLabel} · L${f.startLine}-${f.endLine}</span>`
           + flagHtml
-          + `<button class="chip-remove" onclick="chatAction('removeFile','${this.esc(f.id)}')" title="移除">×</button>`
+          + `<span class="tooltip-wrap" data-tooltip="移除">`
+          + `<button class="chip-remove" onclick="chatAction('removeFile','${this.esc(f.id)}')">×</button>`
+          + `</span>`
           + '</span>';
       }
     }
@@ -533,10 +537,10 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
       <div class="chat-header">
         <h3>错误分析会话</h3>
         <div class="chat-actions">
-          <button class="icon-btn" title="新开会话" onclick="chatAction('newChatSession')" ${busy ? 'disabled' : ''}>${this.iconSvg('new')}</button>
-          <button class="icon-btn primary" title="生成修复补丁" onclick="chatAction('generatePatch')" ${patchDisabled}>${this.iconSvg('patch')}</button>
-          <button class="icon-btn" title="添加文件" onclick="chatAddFiles()" ${busy ? 'disabled' : ''}>${this.iconSvg('add')}</button>
-          <button class="icon-btn" title="恢复默认" onclick="chatAction('restoreDefaults')" ${busy ? 'disabled' : ''}>${this.iconSvg('restore')}</button>
+          <span class="tooltip-wrap align-right" data-tooltip="新开会话"><button class="icon-btn" onclick="chatAction('newChatSession')" ${busy ? 'disabled' : ''}>${this.iconSvg('new')}</button></span>
+          <span class="tooltip-wrap align-right" data-tooltip="生成修复补丁"><button class="icon-btn primary" onclick="chatAction('generatePatch')" ${patchDisabled}>${this.iconSvg('patch')}</button></span>
+          <span class="tooltip-wrap align-right" data-tooltip="添加文件"><button class="icon-btn" onclick="chatAddFiles()" ${busy ? 'disabled' : ''}>${this.iconSvg('add')}</button></span>
+          <span class="tooltip-wrap align-right" data-tooltip="恢复默认文件"><button class="icon-btn" onclick="chatAction('restoreDefaults')" ${busy ? 'disabled' : ''}>${this.iconSvg('restore')}</button></span>
         </div>
       </div>
       <div class="chat-messages" id="chatMessages">${messages}</div>
@@ -713,7 +717,7 @@ h3{margin-bottom:8px;font-size:14px;}h4{font-size:11px;text-transform:uppercase;
 .fix-card{border-left:none;}
 .fix-card p{color:var(--success);}
 .keyword-pills{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;}
-.keyword-badge{background:transparent;border:1px solid #e6b800;border-radius:12px;padding:2px 8px;font-size:11px;cursor:pointer;transition:all .15s;}
+.keyword-badge{background:transparent;border:1px solid #e6b800;border-radius:12px;padding:2px 8px;font-size:10px;cursor:pointer;transition:all .15s;}
 .keyword-badge:hover{background:rgba(230,184,0,0.2);box-shadow:0 0 4px rgba(230,184,0,.3);}
 .kw-en{color:#569cd6;}.kw-cn{color:#e6b800;}
 /* Clickable file links in analysis text */
@@ -732,6 +736,10 @@ h3{margin-bottom:8px;font-size:14px;}h4{font-size:11px;text-transform:uppercase;
 .icon-btn.primary{color:var(--accent);}
 .icon-btn.primary:hover:not(:disabled){color:#fff;background:var(--accent);border-color:var(--accent);}
 .icon-btn:disabled{opacity:.45;cursor:default;}
+.tooltip-wrap{position:relative;display:inline-flex;--tt-left:50%;--tt-right:auto;--tt-transform:translateX(-50%);}
+.tooltip-wrap.align-right{--tt-left:auto;--tt-right:0;--tt-transform:none;}
+.tooltip-wrap[data-tooltip]:hover::after,.tooltip-wrap[data-tooltip]:focus-within::after{content:attr(data-tooltip);position:absolute;bottom:calc(100% + 6px);left:var(--tt-left);right:var(--tt-right);transform:var(--tt-transform);background:var(--vscode-editorHoverWidget-background,#252526);color:var(--vscode-editorHoverWidget-foreground,#d4d4d4);border:1px solid var(--vscode-editorHoverWidget-border,#3c3c3c);padding:3px 7px;font-size:11px;line-height:1.4;white-space:nowrap;border-radius:3px;z-index:20;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.25);}
+.tooltip-wrap.tooltip-below[data-tooltip]:hover::after,.tooltip-wrap.tooltip-below[data-tooltip]:focus-within::after{top:calc(100% + 6px);bottom:auto;}
 .chat-btn{background:var(--bg-card);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:4px 8px;font-size:11px;cursor:pointer;}
 .chat-btn:hover:not(:disabled){border-color:var(--accent);color:#fff;}
 .chat-btn:disabled{opacity:.45;cursor:default;}
