@@ -894,7 +894,10 @@ ${sourceInfoHtml}
 
   document.addEventListener('keydown', function(e) {
     const target = e.target;
-    if (e.key === 'Enter' && !e.shiftKey && target && target.id === 'chatInput') {
+    // Skip while IME composition is active (e.g. confirming English text
+    // typed via a Chinese input method); otherwise Enter would send the
+    // message before the composition is committed.
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229 && target && target.id === 'chatInput') {
       e.preventDefault();
       window.chatSend();
     }
