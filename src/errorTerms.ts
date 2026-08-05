@@ -5,6 +5,8 @@
 export const ERROR_TERM_TRANSLATIONS: Record<string, string> = {
   AssertionError: '断言错误',
   AttributeError: '属性错误',
+  OutOfMemoryError: '内存不足错误',
+  OperationalError: '操作错误',
   EOFError: '输入结束错误',
   FileNotFoundError: '文件未找到错误',
   ImportError: '导入错误',
