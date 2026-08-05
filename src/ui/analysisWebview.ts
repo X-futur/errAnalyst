@@ -22,10 +22,11 @@ interface ShowOptions {
 export type FixWebviewAction =
   | 'acceptFixHunk'
   | 'rejectFixHunk'
+  | 'previewFixHunk'
   | 'acceptAllFix'
   | 'rejectAllFix'
   | 'undoAllFix'
-  | 'endFix'
+  | 'finishFix'
   | 'openFixHunk';
 
 export type ChatWebviewAction =
@@ -163,13 +164,14 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'acceptFixHunk':
       case 'rejectFixHunk':
+      case 'previewFixHunk':
       case 'openFixHunk':
         this.handlers.onFixAction(msg.type, msg.hunkId);
         break;
       case 'acceptAllFix':
       case 'rejectAllFix':
       case 'undoAllFix':
-      case 'endFix':
+      case 'finishFix':
         this.handlers.onFixAction(msg.type);
         break;
       case 'chatSend':
@@ -462,15 +464,18 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
       };
       let hunksHtml = '';
       for (const h of s.hunks) {
-        hunksHtml += `<div class="fix-hunk-row ${h.status}">`
+        hunksHtml += `<div class="fix-hunk ${h.status}">`
+          + `<div class="fix-hunk-row ${h.status}">`
           + `<span class="fix-hunk-file">${this.esc(h.file)}${h.line ? ':' + h.line : ''}</span>`
           + `<span class="fix-hunk-reason">${this.esc(h.reason)}</span>`
           + `<span class="fix-hunk-status">${statusLabel[h.status] || h.status}</span>`
+          + `<button class="fix-mini-btn" onclick="fixAction('previewFixHunk','${h.id}')">预览</button>`
           + (h.status === 'pending'
             ? `<button class="fix-mini-btn" onclick="fixAction('acceptFixHunk','${h.id}')">接受</button>`
             + `<button class="fix-mini-btn reject" onclick="fixAction('rejectFixHunk','${h.id}')">拒绝</button>`
             : '')
           + (h.line ? `<button class="fix-mini-btn" onclick="fixAction('openFixHunk','${h.id}')">查看</button>` : '')
+          + '</div>'
           + '</div>';
       }
       return '<div class="fix-controls">'
@@ -479,7 +484,7 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
         + `<button class="fix-btn" onclick="fixAction('acceptAllFix')" ${s.pending === 0 ? 'disabled' : ''}>全部接受</button>`
         + `<button class="fix-btn" onclick="fixAction('rejectAllFix')" ${s.pending === 0 ? 'disabled' : ''}>全部拒绝</button>`
         + `<button class="fix-btn" onclick="fixAction('undoAllFix')" ${s.accepted === 0 ? 'disabled' : ''}>撤销全部</button>`
-        + '<button class="fix-btn" onclick="fixAction(\'endFix\')">结束修复</button>'
+        + '<button class="fix-btn" onclick="fixAction(\'finishFix\')">结束修复</button>'
         + '</div>'
         + (s.hunks.length > 0
           ? '<div class="fix-hunks">' + hunksHtml + '</div>'
@@ -867,11 +872,12 @@ h3{margin-bottom:8px;font-size:14px;}h4{font-size:11px;text-transform:uppercase;
 .fix-btn:hover:not(:disabled){border-color:var(--accent);color:#fff;}
 .fix-btn:disabled{opacity:.45;cursor:default;}
 .fix-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;}
-.fix-hunks{display:flex;flex-direction:column;gap:4px;max-height:180px;overflow-y:auto;}
-.fix-hunk-row{display:flex;align-items:center;gap:6px;font-size:11px;background:transparent;border:none;border-top:1px solid var(--border);border-radius:0;padding:4px 0;}
-.fix-hunk-row.accepted{border-left:3px solid var(--success);}
-.fix-hunk-row.rejected{opacity:.6;}
-.fix-hunk-row.stale{border-left:3px solid #f44747;opacity:.7;}
+.fix-hunks{display:flex;flex-direction:column;gap:4px;max-height:240px;overflow-y:auto;}
+.fix-hunk{border-top:1px solid var(--border);padding:4px 0;}
+.fix-hunk.accepted{border-left:3px solid var(--success);padding-left:4px;}
+.fix-hunk.rejected{opacity:.6;}
+.fix-hunk.stale{border-left:3px solid #f44747;opacity:.7;}
+.fix-hunk-row{display:flex;align-items:center;gap:6px;font-size:11px;background:transparent;border:none;border-radius:0;padding:0;}
 .fix-hunk-file{color:#569cd6;font-family:Consolas,Monaco,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px;}
 .fix-hunk-reason{flex:1;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .fix-hunk-status{color:var(--text-muted);white-space:nowrap;}

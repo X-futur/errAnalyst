@@ -54,6 +54,7 @@ const session_2 = require("./chat/session");
 const prompt_2 = require("./chat/prompt");
 const configWizard_1 = require("./ui/configWizard");
 const configManager_1 = require("./configManager");
+const fixPreviewPanel_1 = require("./ui/fixPreviewPanel");
 let terminalWatcher;
 let hoverProvider;
 let analysisViewProvider;
@@ -67,6 +68,7 @@ let activeChatAbort = null;
 let lastError = null;
 let configWizard;
 let configManager;
+let fixPreviewPanel;
 function loadCommandManifest(extensionPath) {
     try {
         return JSON.parse(fs.readFileSync(path.join(extensionPath, 'commands.json'), 'utf-8'));
@@ -109,14 +111,31 @@ function activate(context) {
         },
     });
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(analysisWebview_1.AnalysisViewProvider.viewType, analysisViewProvider));
+    // ── Fix preview tab (created before the session manager, whose state
+    //    callback pushes snapshots into it) ──
+    fixPreviewPanel = new fixPreviewPanel_1.FixPreviewPanel({
+        onHunkAction: (action, hunkId) => {
+            if (action === 'accept')
+                void fixSessionManager.accept(hunkId);
+            else
+                void fixSessionManager.reject(hunkId);
+        },
+        onFinish: () => {
+            void finishFixSession();
+        },
+    });
     fixDecorationManager = new decoration_1.FixDecorationManager();
     fixSessionManager = new session_1.FixSessionManager({
         decorations: fixDecorationManager,
         onStateChanged: (snapshot) => {
-            if (snapshot)
+            if (snapshot) {
                 analysisViewProvider.showFixSession(snapshot);
-            else
+                fixPreviewPanel.showSession(snapshot);
+            }
+            else {
                 analysisViewProvider.clearFixState();
+                fixPreviewPanel.close();
+            }
         },
     });
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, fixDecorationManager), vscode.commands.registerCommand('errAnalyst.acceptFixHunk', (id) => void fixSessionManager.accept(id)), vscode.commands.registerCommand('errAnalyst.rejectFixHunk', (id) => void fixSessionManager.reject(id)), vscode.workspace.onDidChangeTextDocument(() => {
@@ -182,6 +201,7 @@ function deactivate() {
     configManager?.dispose();
     fixSessionManager?.end();
     fixDecorationManager?.dispose();
+    fixPreviewPanel?.dispose();
 }
 function registerManifestCommands(context) {
     const manifest = loadCommandManifest(context.extensionPath);
@@ -311,14 +331,37 @@ function handleFixAction(action, hunkId) {
         case 'undoAllFix':
             void fixSessionManager.undoAll();
             break;
-        case 'endFix':
-            fixSessionManager.end();
+        case 'finishFix':
+            void finishFixSession();
             break;
         case 'openFixHunk':
             if (hunkId)
                 void fixSessionManager.openHunk(hunkId);
             break;
+        case 'previewFixHunk': {
+            const snapshot = fixSessionManager.getSnapshot();
+            if (!snapshot)
+                break;
+            const hunk = hunkId ? snapshot.hunks.find(h => h.id === hunkId) : undefined;
+            fixPreviewPanel.showSession(snapshot, hunk?.file, true);
+            break;
+        }
     }
+}
+async function finishFixSession() {
+    const result = await fixSessionManager.finish();
+    if (result.cancelled)
+        return;
+    const parts = [];
+    if (result.written.length > 0)
+        parts.push(`已写入 ${result.written.length} 个文件`);
+    if (result.skipped.length > 0)
+        parts.push(`${result.skipped.length} 个文件因外部修改未写入`);
+    if (result.failed.length > 0)
+        parts.push(`${result.failed.length} 个文件写入失败`);
+    if (parts.length === 0)
+        parts.push('没有已接受的修改，未写入任何文件');
+    void vscode.window.showInformationMessage('ErrAnalyst: ' + parts.join('；'));
 }
 function handleChatAction(action, fileId) {
     switch (action) {
@@ -478,6 +521,7 @@ async function runChatFixFlow() {
     }
     chatSessionManager.setGeneratingPatch(true);
     chatSessionManager.setError(null);
+    fixPreviewPanel.showGenerating();
     try {
         const traceback = parsedTracebackFromResult(lastError);
         const payload = chatSessionManager.buildContextPayload();
@@ -490,12 +534,15 @@ async function runChatFixFlow() {
         });
         if (!response.success) {
             chatSessionManager.setError('AI 请求失败: ' + (response.error || '未知错误'));
+            fixPreviewPanel.close();
             return;
         }
         const allowedFiles = chatSessionManager.getAllowedFilePaths();
         const parsed = (0, prompt_1.parseFixResponseWithReason)(response.content, allowedFiles);
         if (parsed.hunks.length === 0) {
-            chatSessionManager.appendAssistantMessage(parsed.reason || 'AI 未给出可应用的修改：根因可能不在当前代码中，或无法从现有上下文确定。');
+            const reason = parsed.reason || 'AI 未给出可应用的修改：根因可能不在当前代码中，或无法从现有上下文确定。';
+            chatSessionManager.appendAssistantMessage(reason);
+            fixPreviewPanel.showError(reason);
             return;
         }
         const hunks = parsed.hunks.map((input, i) => ({
@@ -507,10 +554,11 @@ async function runChatFixFlow() {
             status: 'pending',
         }));
         await fixSessionManager.start(lastError, hunks);
-        chatSessionManager.addNotice(`已生成 ${hunks.length} 处修改，可在上方修复建议卡片逐处确认`);
+        chatSessionManager.addNotice(`已生成 ${hunks.length} 处修改，可在修改预览选项卡中逐处确认`);
     }
     catch (e) {
         chatSessionManager.setError(e instanceof Error ? e.message : String(e));
+        fixPreviewPanel.showError(e instanceof Error ? e.message : String(e));
     }
     finally {
         chatSessionManager.setGeneratingPatch(false);
@@ -567,6 +615,7 @@ async function runFixFlow() {
         return;
     }
     analysisViewProvider.showFixGenerating();
+    fixPreviewPanel.showGenerating();
     try {
         const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
         const parsedTraceback = {
@@ -585,13 +634,16 @@ async function runFixFlow() {
             lastError.fixSuggestion ? '文字建议：' + lastError.fixSuggestion : '',
         ].filter(Boolean).join('\n\n');
         const hunks = await generateFixHunks(llm, parsedTraceback, context, analysisText);
-        await fixSessionManager.start(lastError, hunks);
         if (hunks.length === 0) {
             vscode.window.showInformationMessage('ErrAnalyst: AI 未生成可应用的修复补丁');
+            fixPreviewPanel.close();
+            return;
         }
+        await fixSessionManager.start(lastError, hunks);
     }
     catch (e) {
         analysisViewProvider.showFixError(e instanceof Error ? e.message : String(e));
+        fixPreviewPanel.showError(e instanceof Error ? e.message : String(e));
         console.error('ErrAnalyst: fix generation failed', e);
     }
 }

@@ -24,15 +24,6 @@ export function findLineRange(lines: string[], target: string[]): LineRange | nu
   return null;
 }
 
-/** Match target lines only at the exact given start line. */
-export function findLineRangeAt(lines: string[], target: string[], startLine: number): LineRange | null {
-  if (target.length === 0 || startLine < 0 || startLine + target.length > lines.length) return null;
-  for (let j = 0; j < target.length; j++) {
-    if (normalizeLine(lines[startLine + j]) !== normalizeLine(target[j])) return null;
-  }
-  return { startLine, endLine: startLine + target.length - 1 };
-}
-
 export interface LineDiff {
   /** Indices into oldLines that are removed. */
   removed: number[];

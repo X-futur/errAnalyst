@@ -23,6 +23,7 @@ import type { ChatAutoFileInput } from './chat/types';
 import { buildChatMessages } from './chat/prompt';
 import { ConfigWizard } from './ui/configWizard';
 import { ConfigManager } from './configManager';
+import { FixPreviewPanel } from './ui/fixPreviewPanel';
 
 let terminalWatcher: TerminalWatcher;
 let hoverProvider: ErrorHoverProvider;
@@ -37,6 +38,7 @@ let activeChatAbort: AbortController | null = null;
 let lastError: ErrorAnalysisResult | null = null;
 let configWizard: ConfigWizard;
 let configManager: ConfigManager;
+let fixPreviewPanel: FixPreviewPanel;
 
 interface CommandDefinition {
   vscodeId: string | null;
@@ -95,12 +97,29 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.window.registerWebviewViewProvider(AnalysisViewProvider.viewType, analysisViewProvider)
   );
 
+  // ── Fix preview tab (created before the session manager, whose state
+  //    callback pushes snapshots into it) ──
+  fixPreviewPanel = new FixPreviewPanel({
+    onHunkAction: (action, hunkId) => {
+      if (action === 'accept') void fixSessionManager.accept(hunkId);
+      else void fixSessionManager.reject(hunkId);
+    },
+    onFinish: () => {
+      void finishFixSession();
+    },
+  });
+
   fixDecorationManager = new FixDecorationManager();
   fixSessionManager = new FixSessionManager({
     decorations: fixDecorationManager,
     onStateChanged: (snapshot) => {
-      if (snapshot) analysisViewProvider.showFixSession(snapshot);
-      else analysisViewProvider.clearFixState();
+      if (snapshot) {
+        analysisViewProvider.showFixSession(snapshot);
+        fixPreviewPanel.showSession(snapshot);
+      } else {
+        analysisViewProvider.clearFixState();
+        fixPreviewPanel.close();
+      }
     },
   });
   context.subscriptions.push(
@@ -185,6 +204,7 @@ export function deactivate() {
   configManager?.dispose();
   fixSessionManager?.end();
   fixDecorationManager?.dispose();
+  fixPreviewPanel?.dispose();
 }
 
 function registerManifestCommands(context: vscode.ExtensionContext): void {
@@ -314,13 +334,31 @@ function handleFixAction(action: FixWebviewAction, hunkId?: string): void {
     case 'undoAllFix':
       void fixSessionManager.undoAll();
       break;
-    case 'endFix':
-      fixSessionManager.end();
+    case 'finishFix':
+      void finishFixSession();
       break;
     case 'openFixHunk':
       if (hunkId) void fixSessionManager.openHunk(hunkId);
       break;
+    case 'previewFixHunk': {
+      const snapshot = fixSessionManager.getSnapshot();
+      if (!snapshot) break;
+      const hunk = hunkId ? snapshot.hunks.find(h => h.id === hunkId) : undefined;
+      fixPreviewPanel.showSession(snapshot, hunk?.file, true);
+      break;
+    }
   }
+}
+
+async function finishFixSession(): Promise<void> {
+  const result = await fixSessionManager.finish();
+  if (result.cancelled) return;
+  const parts: string[] = [];
+  if (result.written.length > 0) parts.push(`已写入 ${result.written.length} 个文件`);
+  if (result.skipped.length > 0) parts.push(`${result.skipped.length} 个文件因外部修改未写入`);
+  if (result.failed.length > 0) parts.push(`${result.failed.length} 个文件写入失败`);
+  if (parts.length === 0) parts.push('没有已接受的修改，未写入任何文件');
+  void vscode.window.showInformationMessage('ErrAnalyst: ' + parts.join('；'));
 }
 
 function handleChatAction(action: ChatWebviewAction, fileId?: string): void {
@@ -480,6 +518,7 @@ async function runChatFixFlow(): Promise<void> {
 
   chatSessionManager.setGeneratingPatch(true);
   chatSessionManager.setError(null);
+  fixPreviewPanel.showGenerating();
   try {
     const traceback = parsedTracebackFromResult(lastError);
     const payload = chatSessionManager.buildContextPayload();
@@ -497,14 +536,15 @@ async function runChatFixFlow(): Promise<void> {
     });
     if (!response.success) {
       chatSessionManager.setError('AI 请求失败: ' + (response.error || '未知错误'));
+      fixPreviewPanel.close();
       return;
     }
     const allowedFiles = chatSessionManager.getAllowedFilePaths();
     const parsed = parseFixResponseWithReason(response.content, allowedFiles);
     if (parsed.hunks.length === 0) {
-      chatSessionManager.appendAssistantMessage(
-        parsed.reason || 'AI 未给出可应用的修改：根因可能不在当前代码中，或无法从现有上下文确定。'
-      );
+      const reason = parsed.reason || 'AI 未给出可应用的修改：根因可能不在当前代码中，或无法从现有上下文确定。';
+      chatSessionManager.appendAssistantMessage(reason);
+      fixPreviewPanel.showError(reason);
       return;
     }
     const hunks: FixHunk[] = parsed.hunks.map((input, i) => ({
@@ -516,9 +556,10 @@ async function runChatFixFlow(): Promise<void> {
       status: 'pending' as const,
     }));
     await fixSessionManager.start(lastError, hunks);
-    chatSessionManager.addNotice(`已生成 ${hunks.length} 处修改，可在上方修复建议卡片逐处确认`);
+    chatSessionManager.addNotice(`已生成 ${hunks.length} 处修改，可在修改预览选项卡中逐处确认`);
   } catch (e) {
     chatSessionManager.setError(e instanceof Error ? e.message : String(e));
+    fixPreviewPanel.showError(e instanceof Error ? e.message : String(e));
   } finally {
     chatSessionManager.setGeneratingPatch(false);
   }
@@ -579,6 +620,7 @@ async function runFixFlow(): Promise<void> {
   }
 
   analysisViewProvider.showFixGenerating();
+  fixPreviewPanel.showGenerating();
   try {
     const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
     const parsedTraceback: ParsedTraceback = {
@@ -598,12 +640,15 @@ async function runFixFlow(): Promise<void> {
     ].filter(Boolean).join('\n\n');
 
     const hunks = await generateFixHunks(llm, parsedTraceback, context, analysisText);
-    await fixSessionManager.start(lastError, hunks);
     if (hunks.length === 0) {
       vscode.window.showInformationMessage('ErrAnalyst: AI 未生成可应用的修复补丁');
+      fixPreviewPanel.close();
+      return;
     }
+    await fixSessionManager.start(lastError, hunks);
   } catch (e) {
     analysisViewProvider.showFixError(e instanceof Error ? e.message : String(e));
+    fixPreviewPanel.showError(e instanceof Error ? e.message : String(e));
     console.error('ErrAnalyst: fix generation failed', e);
   }
 }

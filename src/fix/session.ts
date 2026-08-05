@@ -1,8 +1,9 @@
 import * as vscode from 'vscode';
 import type { ErrorAnalysisResult } from '../config';
 import type { FixDecorationManager } from './decoration';
-import type { FixHunk, FixHunkStatus, FixSession } from './types';
-import { findLineRange, findLineRangeAt, normalizeLine, type LineRange } from './validator';
+import type { FileSnapshot, FixHunk, FixHunkStatus, FixSession } from './types';
+import { findLineRange, normalizeLine } from './validator';
+import { buildFilePreview, buildFinalLines, type FilePreview } from './preview';
 
 export interface FixHunkView {
   id: string;
@@ -10,6 +11,8 @@ export interface FixHunkView {
   reason: string;
   status: FixHunkStatus;
   line: number;
+  oldLines: string[];
+  newLines: string[];
 }
 
 export interface FixViewSnapshot {
@@ -20,6 +23,15 @@ export interface FixViewSnapshot {
   stale: number;
   canUndoAll: boolean;
   hunks: FixHunkView[];
+  /** Per-file virtual documents rendered in the fix preview tab. */
+  files: FilePreview[];
+}
+
+export interface FinishResult {
+  written: string[];
+  skipped: string[];
+  failed: string[];
+  cancelled: boolean;
 }
 
 export interface FixSessionManagerDeps {
@@ -28,13 +40,16 @@ export interface FixSessionManagerDeps {
 }
 
 /**
- * Owns the single active fix session: validation, per-hunk apply, undo-all,
- * and lifecycle tied to the current error.
+ * Owns the single active fix session. Nothing is written to disk while the
+ * session is active: accept/reject only mutate in-memory hunk state, the
+ * preview tab renders a virtual document, and finish() writes all accepted
+ * changes to the real files (after re-validating each file against its
+ * original snapshot).
  */
 export class FixSessionManager {
   private session: FixSession | null = null;
-  private acceptOrder = 0;
   private readonly hunkLines = new Map<string, number>();
+  private finishing = false;
 
   constructor(private readonly deps: FixSessionManagerDeps) {}
 
@@ -49,77 +64,106 @@ export class FixSessionManager {
       errorKey: `${error.errorType}:${error.filePath}`,
       hunks: hunks.map(h => ({ ...h, status: 'pending' as FixHunkStatus })),
       startedAt: Date.now(),
+      snapshots: new Map(),
+      staleFiles: new Set(),
     };
     await this.refresh();
   }
 
+  /**
+   * Re-validate every file against its snapshot and rebuild the preview.
+   * Called on every hunk state change and on external text-document changes.
+   */
   async refresh(): Promise<void> {
+    if (this.finishing) return;
     const session = this.session;
     if (!session) return;
 
+    const byFile = new Map<string, FixHunk[]>();
+    for (const h of session.hunks) {
+      const list = byFile.get(h.file) || [];
+      list.push(h);
+      byFile.set(h.file, list);
+    }
+
     this.hunkLines.clear();
-    for (const hunk of session.hunks) {
-      if (hunk.status !== 'pending') continue;
-      const range = await this.findRange(hunk);
-      if (range) {
-        this.hunkLines.set(hunk.id, range.startLine + 1);
-      } else {
-        hunk.status = 'stale';
+
+    for (const [file, hunks] of byFile) {
+      let current: FileSnapshot | null = null;
+      try {
+        const doc = await vscode.workspace.openTextDocument(file);
+        const lines: string[] = [];
+        for (let i = 0; i < doc.lineCount; i++) lines.push(doc.lineAt(i).text);
+        current = { lines, endsWithNewline: doc.getText().endsWith('\n') };
+      } catch {
+        current = null;
+      }
+
+      const snapshot = session.snapshots.get(file);
+      if (!snapshot) {
+        if (!current) {
+          this.markAllStale(hunks);
+          session.staleFiles.add(file);
+          continue;
+        }
+        session.snapshots.set(file, current);
+      } else if (!current || !sameLines(current.lines, snapshot.lines)) {
+        this.markAllStale(hunks);
+        session.staleFiles.add(file);
+        continue;
+      }
+
+      const base = session.snapshots.get(file)!.lines;
+      const edits: Array<{ hunk: FixHunk; startLine: number; endLine: number }> = [];
+      for (const h of hunks) {
+        if (h.status === 'stale') continue;
+        const range = findLineRange(base, h.oldLines);
+        if (!range) {
+          h.status = 'stale';
+          continue;
+        }
+        this.hunkLines.set(h.id, range.startLine + 1);
+        edits.push({ hunk: h, startLine: range.startLine, endLine: range.endLine });
+      }
+      edits.sort((a, b) => a.startLine - b.startLine);
+      let cursor = -1;
+      for (const e of edits) {
+        if (e.startLine <= cursor) {
+          e.hunk.status = 'stale';
+          this.hunkLines.delete(e.hunk.id);
+          continue;
+        }
+        cursor = e.endLine;
       }
     }
 
-    this.deps.decorations.render(session);
-    this.deps.onStateChanged(this.buildSnapshot(session));
+    if (!this.finishing && this.session === session) {
+      this.deps.decorations.render(session);
+      this.deps.onStateChanged(this.buildSnapshot(session));
+    }
   }
 
   async accept(hunkId: string): Promise<void> {
-    const session = this.session;
-    const hunk = session?.hunks.find(h => h.id === hunkId);
-    if (!session || !hunk || hunk.status !== 'pending') return;
-
-    const range = await this.findRange(hunk);
-    if (!range) {
-      hunk.status = 'stale';
-      await this.refresh();
-      return;
-    }
-
-    try {
-      const doc = await vscode.workspace.openTextDocument(hunk.file);
-      const editor = await vscode.window.showTextDocument(doc);
-      const afterLine = range.endLine + 1 < doc.lineCount
-        ? normalizeLine(doc.lineAt(range.endLine + 1).text)
-        : null;
-      const newText = hunk.newLines.length > 0 ? hunk.newLines.join('\n') + '\n' : '';
-      const applied = await editor.edit(builder => {
-        builder.replace(fullLineRange(doc, range.startLine, range.endLine), newText);
-      });
-
-      if (applied) {
-        hunk.status = 'accepted';
-        hunk.applied = { startLine: range.startLine, endLine: range.endLine, afterLine, order: ++this.acceptOrder };
-      } else {
-        hunk.status = 'stale';
-      }
-    } catch {
-      hunk.status = 'stale';
-    }
+    const hunk = this.session?.hunks.find(h => h.id === hunkId);
+    if (!hunk || hunk.status !== 'pending') return;
+    hunk.status = 'accepted';
     await this.refresh();
   }
 
   async reject(hunkId: string): Promise<void> {
-    const session = this.session;
-    const hunk = session?.hunks.find(h => h.id === hunkId);
-    if (!session || !hunk || hunk.status !== 'pending') return;
+    const hunk = this.session?.hunks.find(h => h.id === hunkId);
+    if (!hunk || hunk.status !== 'pending') return;
     hunk.status = 'rejected';
     await this.refresh();
   }
 
   async acceptAll(): Promise<void> {
-    const pendingIds = this.session?.hunks.filter(h => h.status === 'pending').map(h => h.id) || [];
-    for (const id of pendingIds) {
-      await this.accept(id);
+    const session = this.session;
+    if (!session) return;
+    for (const hunk of session.hunks) {
+      if (hunk.status === 'pending') hunk.status = 'accepted';
     }
+    await this.refresh();
   }
 
   async rejectAll(): Promise<void> {
@@ -134,32 +178,92 @@ export class FixSessionManager {
   async undoAll(): Promise<void> {
     const session = this.session;
     if (!session) return;
-    const accepted = session.hunks
-      .filter(h => h.status === 'accepted' && h.applied)
-      .sort((a, b) => (a.applied?.order || 0) - (b.applied?.order || 0));
-    let failed = false;
-
-    for (const hunk of [...accepted].reverse()) {
-      const restored = await this.undoOne(hunk);
-      if (restored) {
-        hunk.status = 'pending';
-        hunk.applied = undefined;
-      } else {
-        hunk.status = 'stale';
-        failed = true;
-      }
-    }
-    if (failed) {
-      void vscode.window.showWarningMessage('ErrAnalyst: 部分修改无法撤销（文件已被手动改动），已标记为失效');
+    for (const hunk of session.hunks) {
+      if (hunk.status === 'accepted') hunk.status = 'pending';
     }
     await this.refresh();
+  }
+
+  /**
+   * Finish the fix: write all accepted hunks into the real files and end the
+   * session. Files that changed since the snapshot are skipped. Unconfirmed
+   * hunks are not written (the user is warned first).
+   */
+  async finish(): Promise<FinishResult> {
+    const session = this.session;
+    if (!session) return { written: [], skipped: [], failed: [], cancelled: false };
+
+    const pendingCount = session.hunks.filter(h => h.status === 'pending').length;
+    if (pendingCount > 0) {
+      const choice = await vscode.window.showWarningMessage(
+        `还有 ${pendingCount} 处修改未确认，这些修改将不会写入。确定结束修复？`,
+        { modal: true },
+        '确定结束',
+      );
+      if (choice !== '确定结束') {
+        return { written: [], skipped: [], failed: [], cancelled: true };
+      }
+    }
+
+    this.finishing = true;
+    const written: string[] = [];
+    const skipped: string[] = [];
+    const failed: string[] = [];
+
+    const byFile = new Map<string, FixHunk[]>();
+    for (const h of session.hunks) {
+      if (h.status !== 'accepted') continue;
+      const list = byFile.get(h.file) || [];
+      list.push(h);
+      byFile.set(h.file, list);
+    }
+
+    for (const [file, hunks] of byFile) {
+      const snapshot = session.snapshots.get(file);
+      if (!snapshot) {
+        skipped.push(file);
+        continue;
+      }
+      try {
+        const doc = await vscode.workspace.openTextDocument(file);
+        const currentLines: string[] = [];
+        for (let i = 0; i < doc.lineCount; i++) currentLines.push(doc.lineAt(i).text);
+        if (!sameLines(currentLines, snapshot.lines)) {
+          skipped.push(file);
+          continue;
+        }
+
+        const finalLines = buildFinalLines(snapshot.lines, hunks);
+        const finalText = finalLines.join('\n') + (snapshot.endsWithNewline ? '\n' : '');
+        const fullRange = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
+        const edit = new vscode.WorkspaceEdit();
+        edit.replace(doc.uri, fullRange, finalText);
+        const applied = await vscode.workspace.applyEdit(edit);
+        if (!applied) {
+          failed.push(file);
+          continue;
+        }
+        const saved = await doc.save();
+        if (!saved) {
+          failed.push(file);
+          continue;
+        }
+        written.push(file);
+      } catch {
+        failed.push(file);
+      }
+    }
+
+    this.finishing = false;
+    this.end();
+    return { written, skipped, failed, cancelled: false };
   }
 
   async openHunk(hunkId: string): Promise<void> {
     const session = this.session;
     const hunk = session?.hunks.find(h => h.id === hunkId);
     if (!session || !hunk) return;
-    const line = this.hunkLines.get(hunkId) || hunk.applied?.startLine;
+    const line = this.hunkLines.get(hunkId);
     if (!line) return;
     try {
       const doc = await vscode.workspace.openTextDocument(hunk.file);
@@ -171,6 +275,10 @@ export class FixSessionManager {
     } catch { /* file may be gone */ }
   }
 
+  getSnapshot(): FixViewSnapshot | null {
+    return this.session ? this.buildSnapshot(this.session) : null;
+  }
+
   end(): void {
     if (!this.session) return;
     this.session.endedAt = Date.now();
@@ -180,47 +288,8 @@ export class FixSessionManager {
     this.deps.onStateChanged(null);
   }
 
-  private async findRange(hunk: FixHunk): Promise<LineRange | null> {
-    try {
-      const doc = await vscode.workspace.openTextDocument(hunk.file);
-      const lines: string[] = [];
-      for (let i = 0; i < doc.lineCount; i++) lines.push(doc.lineAt(i).text);
-      return findLineRange(lines, hunk.oldLines);
-    } catch {
-      return null;
-    }
-  }
-
-  private async undoOne(hunk: FixHunk): Promise<boolean> {
-    const applied = hunk.applied;
-    if (!applied) return false;
-    try {
-      const doc = await vscode.workspace.openTextDocument(hunk.file);
-      const editor = await vscode.window.showTextDocument(doc);
-
-      if (hunk.newLines.length === 0) {
-        // Deletion: verify the expected following line is still in place.
-        if (applied.afterLine === null) {
-          if (doc.lineCount !== applied.startLine) return false;
-        } else {
-          if (doc.lineCount <= applied.startLine) return false;
-          if (normalizeLine(doc.lineAt(applied.startLine).text) !== normalizeLine(applied.afterLine)) return false;
-        }
-        return await editor.edit(builder => {
-          builder.insert(new vscode.Position(applied.startLine, 0), hunk.oldLines.join('\n') + '\n');
-        });
-      }
-
-      const lines: string[] = [];
-      for (let i = 0; i < doc.lineCount; i++) lines.push(doc.lineAt(i).text);
-      const range = findLineRangeAt(lines, hunk.newLines, applied.startLine) || findLineRange(lines, hunk.newLines);
-      if (!range) return false;
-      return await editor.edit(builder => {
-        builder.replace(fullLineRange(doc, range.startLine, range.endLine), hunk.oldLines.join('\n') + '\n');
-      });
-    } catch {
-      return false;
-    }
+  private markAllStale(hunks: FixHunk[]): void {
+    for (const h of hunks) h.status = 'stale';
   }
 
   private buildSnapshot(session: FixSession): FixViewSnapshot {
@@ -240,8 +309,29 @@ export class FixSessionManager {
         reason: h.reason,
         status: h.status,
         line: this.hunkLines.get(h.id) || 0,
+        oldLines: h.oldLines,
+        newLines: h.newLines,
       });
     }
+
+    const byFile = new Map<string, FixHunk[]>();
+    for (const h of session.hunks) {
+      const list = byFile.get(h.file) || [];
+      list.push(h);
+      byFile.set(h.file, list);
+    }
+
+    const files: FilePreview[] = [];
+    for (const [file, hs] of byFile) {
+      const snapshot = session.snapshots.get(file);
+      if (!snapshot) continue;
+      if (session.staleFiles.has(file)) {
+        files.push({ file, stale: true, blocks: [], addedCount: 0, removedCount: 0 });
+        continue;
+      }
+      files.push(buildFilePreview(snapshot.lines, hs, file));
+    }
+
     return {
       total: session.hunks.length,
       pending,
@@ -250,15 +340,16 @@ export class FixSessionManager {
       stale,
       canUndoAll: accepted > 0,
       hunks,
+      files,
     };
   }
 }
 
-/** Replace whole lines (including their trailing line break) for clean line edits. */
-function fullLineRange(doc: vscode.TextDocument, startLine: number, endLine: number): vscode.Range {
-  const startPos = new vscode.Position(startLine, 0);
-  const endPos = endLine + 1 < doc.lineCount
-    ? new vscode.Position(endLine + 1, 0)
-    : doc.positionAt(doc.getText().length);
-  return new vscode.Range(startPos, endPos);
+/** Line-by-line equality, tolerant of trailing \r (CRLF files). */
+function sameLines(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (normalizeLine(a[i]) !== normalizeLine(b[i])) return false;
+  }
+  return true;
 }

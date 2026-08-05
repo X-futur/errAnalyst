@@ -1,7 +1,13 @@
 import * as assert from 'assert';
 import { parseFixResponse } from '../src/fix/prompt';
-import { diffLines, findLineRange, findLineRangeAt } from '../src/fix/validator';
+import { diffLines, findLineRange } from '../src/fix/validator';
 import { buildAnalysisPrompts, sanitizeKeywords } from '../src/llmProvider/openaiCompatible';
+import { buildFilePreview, buildFinalLines } from '../src/fix/preview';
+import type { FixHunk, FixHunkStatus } from '../src/fix/types';
+
+function mkHunk(id: string, oldLines: string[], newLines: string[], status: FixHunkStatus = 'pending'): FixHunk {
+  return { id, file: '/p/main.py', reason: `reason-${id}`, oldLines, newLines, status };
+}
 
 suite('FixPrompt', () => {
   test('parses valid structured fix response', () => {
@@ -103,11 +109,6 @@ suite('FixValidator', () => {
     assert.strictEqual(findLineRange(['a', 'c'], ['b']), null);
   });
 
-  test('matches target only at exact start line', () => {
-    assert.deepStrictEqual(findLineRangeAt(['a', 'b', 'a', 'b'], ['a', 'b'], 0), { startLine: 0, endLine: 1 });
-    assert.deepStrictEqual(findLineRangeAt(['a', 'b', 'a', 'b'], ['a', 'b'], 1), null);
-  });
-
   test('diffs additions', () => {
     const diff = diffLines(['x'], ['x', 'y']);
     assert.deepStrictEqual(diff.removed, []);
@@ -124,6 +125,108 @@ suite('FixValidator', () => {
     const diff = diffLines(['a', 'old'], ['a', 'new']);
     assert.deepStrictEqual(diff.removed, [1]);
     assert.deepStrictEqual(diff.added, [1]);
+  });
+});
+
+suite('FixPreview', () => {
+  test('pending replacement shows red old above green new with running line numbers', () => {
+    const file = buildFilePreview(['a', 'b', 'c'], [mkHunk('h1', ['b'], ['B'])], '/p/main.py');
+    const kinds = file.blocks.flatMap(b => b.lines.map(l => [l.kind, l.text, l.lineNo] as const));
+    assert.deepStrictEqual(kinds, [
+      ['context', 'a', 1],
+      ['removed', 'b', 2],
+      ['added', 'B', 3],
+      ['context', 'c', 4],
+    ]);
+  });
+
+  test('accepted replacement keeps green new and drops red old', () => {
+    const file = buildFilePreview(['a', 'b', 'c'], [mkHunk('h1', ['b'], ['B'], 'accepted')], '/p/main.py');
+    const kinds = file.blocks.flatMap(b => b.lines.map(l => [l.kind, l.text] as const));
+    assert.deepStrictEqual(kinds, [
+      ['context', 'a'],
+      ['added', 'B'],
+      ['context', 'c'],
+    ]);
+  });
+
+  test('rejected replacement restores plain text', () => {
+    const file = buildFilePreview(['a', 'b', 'c'], [mkHunk('h1', ['b'], ['B'], 'rejected')], '/p/main.py');
+    const kinds = file.blocks.flatMap(b => b.lines.map(l => [l.kind, l.text] as const));
+    assert.deepStrictEqual(kinds, [
+      ['context', 'a'],
+      ['context', 'b'],
+      ['context', 'c'],
+    ]);
+  });
+
+  test('insertion keeps the anchor as context and adds green lines', () => {
+    const file = buildFilePreview(['x'], [mkHunk('h1', ['x'], ['x', 'y', 'z'])], '/p/main.py');
+    const kinds = file.blocks.flatMap(b => b.lines.map(l => [l.kind, l.text, l.lineNo] as const));
+    assert.deepStrictEqual(kinds, [
+      ['context', 'x', 1],
+      ['added', 'y', 2],
+      ['added', 'z', 3],
+    ]);
+  });
+
+  test('deletion marks all old lines red', () => {
+    const file = buildFilePreview(['a', 'b', 'c'], [mkHunk('h1', ['b'], [])], '/p/main.py');
+    const kinds = file.blocks.flatMap(b => b.lines.map(l => [l.kind, l.text] as const));
+    assert.deepStrictEqual(kinds, [
+      ['context', 'a'],
+      ['removed', 'b'],
+      ['context', 'c'],
+    ]);
+  });
+
+  test('line numbers update when a hunk above is confirmed (sync)', () => {
+    const tailNo = (status: FixHunkStatus) => {
+      const file = buildFilePreview(['x', 'tail'], [mkHunk('h1', ['x'], ['Y'], status)], '/p/main.py');
+      return file.blocks.flatMap(b => b.lines).find(l => l.text === 'tail')!.lineNo;
+    };
+    assert.strictEqual(tailNo('pending'), 3);  // removed x + added Y + tail
+    assert.strictEqual(tailNo('accepted'), 2); // added Y + tail
+    assert.strictEqual(tailNo('rejected'), 2); // context x + tail
+  });
+
+  test('buildFinalLines applies only accepted hunks in document order', () => {
+    const orig = ['a', 'b', 'c', 'd'];
+    const hunks = [
+      mkHunk('h1', ['b'], ['B'], 'accepted'),
+      mkHunk('h2', ['c'], ['C'], 'pending'),
+      mkHunk('h3', ['d'], ['D'], 'rejected'),
+    ];
+    assert.deepStrictEqual(buildFinalLines(orig, hunks), ['a', 'B', 'c', 'd']);
+  });
+
+  test('buildFinalLines handles insertion and deletion', () => {
+    const orig = ['x', 'y', 'z'];
+    const hunks = [
+      mkHunk('ins', ['x'], ['x', 'x1', 'x2'], 'accepted'),
+      mkHunk('del', ['z'], [], 'accepted'),
+    ];
+    assert.deepStrictEqual(buildFinalLines(orig, hunks), ['x', 'x1', 'x2', 'y']);
+  });
+
+  test('overlapping hunks are skipped defensively', () => {
+    const orig = ['a', 'b', 'c'];
+    const hunks = [
+      mkHunk('h1', ['a', 'b'], ['A', 'B'], 'accepted'),
+      mkHunk('h2', ['b', 'c'], ['X'], 'accepted'),
+    ];
+    const preview = buildFilePreview(orig, hunks, '/p/main.py');
+    const hunkIds = preview.blocks.map(b => b.hunkId).filter(Boolean);
+    assert.deepStrictEqual(hunkIds, ['h1']);
+    assert.deepStrictEqual(buildFinalLines(orig, hunks), ['A', 'B', 'c']);
+  });
+
+  test('multi-file preview keeps files separate', () => {
+    const fileA = buildFilePreview(['a'], [mkHunk('h1', ['a'], ['A'])], '/p/a.py');
+    const fileB = buildFilePreview(['b'], [mkHunk('h2', ['b'], ['B'])], '/p/b.py');
+    assert.strictEqual(fileA.file, '/p/a.py');
+    assert.strictEqual(fileB.file, '/p/b.py');
+    assert.strictEqual(fileA.blocks[0].lines.length, 2);
   });
 });
 

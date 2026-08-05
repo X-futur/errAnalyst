@@ -2,27 +2,18 @@ import * as vscode from 'vscode';
 import type { FixHunk, FixSession } from './types';
 import { diffLines, findLineRange } from './validator';
 
-const ADDED_BG = 'rgba(46, 160, 67, 0.22)';
 const REMOVED_BG = 'rgba(196, 43, 28, 0.22)';
 
 /**
- * Renders pending fix hunks as green/red editor decorations and provides
- * per-hunk CodeLens actions (accept / reject).
+ * Renders hunks that will change as red editor decorations (the real file is
+ * untouched until the user finishes the fix) and provides per-hunk CodeLens
+ * actions (accept / reject) for pending hunks.
  */
 export class FixDecorationManager implements vscode.CodeLensProvider {
   private session: FixSession | null = null;
-  private readonly addedType: vscode.TextEditorDecorationType;
   private readonly removedType: vscode.TextEditorDecorationType;
 
   constructor() {
-    this.addedType = vscode.window.createTextEditorDecorationType({
-      isWholeLine: true,
-      after: {
-        backgroundColor: ADDED_BG,
-        color: '#6a9955',
-        margin: '0 0 0 12px',
-      },
-    });
     this.removedType = vscode.window.createTextEditorDecorationType({
       isWholeLine: true,
       backgroundColor: REMOVED_BG,
@@ -33,16 +24,14 @@ export class FixDecorationManager implements vscode.CodeLensProvider {
   render(session: FixSession | null): void {
     this.session = session;
     for (const editor of vscode.window.visibleTextEditors) {
-      editor.setDecorations(this.addedType, []);
       editor.setDecorations(this.removedType, []);
     }
     if (!session) return;
 
-    const addedByEditor = new Map<string, vscode.DecorationOptions[]>();
     const removedByEditor = new Map<string, vscode.Range[]>();
 
     for (const hunk of session.hunks) {
-      if (hunk.status !== 'pending') continue;
+      if (hunk.status !== 'pending' && hunk.status !== 'accepted') continue;
       const editor = vscode.window.visibleTextEditors.find(e => e.document.uri.fsPath === hunk.file);
       if (!editor) continue;
 
@@ -56,34 +45,16 @@ export class FixDecorationManager implements vscode.CodeLensProvider {
         list.push(line.range);
         removedByEditor.set(hunk.file, list);
       }
-      if (diff.added.length > 0) {
-        const anchorLine = range.startLine + hunk.oldLines.length - 1;
-        const anchorRange = editor.document.lineAt(anchorLine).range;
-        const list = addedByEditor.get(hunk.file) || [];
-        list.push({
-          range: anchorRange,
-          hoverMessage: '新增/修改行（绿色）',
-          renderOptions: {
-            after: {
-              contentText: diff.added.map(i => hunk.newLines[i]).join('\n'),
-            },
-          },
-        });
-        addedByEditor.set(hunk.file, list);
-      }
     }
 
     for (const editor of vscode.window.visibleTextEditors) {
-      const key = editor.document.uri.fsPath;
-      editor.setDecorations(this.addedType, addedByEditor.get(key) || []);
-      editor.setDecorations(this.removedType, removedByEditor.get(key) || []);
+      editor.setDecorations(this.removedType, removedByEditor.get(editor.document.uri.fsPath) || []);
     }
   }
 
   clear(): void {
     this.session = null;
     for (const editor of vscode.window.visibleTextEditors) {
-      editor.setDecorations(this.addedType, []);
       editor.setDecorations(this.removedType, []);
     }
     this.refreshCodeLenses();
@@ -91,7 +62,6 @@ export class FixDecorationManager implements vscode.CodeLensProvider {
 
   dispose(): void {
     this.clear();
-    this.addedType.dispose();
     this.removedType.dispose();
   }
 
@@ -107,7 +77,7 @@ export class FixDecorationManager implements vscode.CodeLensProvider {
         title: '✓ 接受',
         command: 'errAnalyst.acceptFixHunk',
         arguments: [hunk.id],
-        tooltip: '接受此修改并写入文件',
+        tooltip: '接受此修改（结束修复时写入文件）',
       }));
       lenses.push(new vscode.CodeLens(lensLine, {
         title: '✕ 拒绝',
