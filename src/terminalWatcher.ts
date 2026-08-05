@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { PythonTracebackParser } from './parser/pythonTraceback';
+import type { ParsedTraceback } from './parser';
 import { ErrorAnalysisResult } from './config';
 import { ErrorLinkProvider_ } from './ui/errorLinkProvider';
 
@@ -21,6 +22,16 @@ function stripAnsi(text: string): string {
 }
 
 export type ErrorDetectedCallback = (result: ErrorAnalysisResult) => void;
+
+/**
+ * True when the parsed error is a KeyboardInterrupt caused by a manual stop
+ * (e.g. Ctrl+C). The parser may fall back to errorType "Error" with
+ * "KeyboardInterrupt" as the message, so both forms are checked.
+ */
+export function isKeyboardInterruptError(parseResult: ParsedTraceback): boolean {
+  return parseResult.errorType === 'KeyboardInterrupt' ||
+    /^KeyboardInterrupt(?:\s*:|\s|$)/m.test(parseResult.errorMessage);
+}
 
 export class TerminalWatcher {
   private disposables: vscode.Disposable[] = [];
@@ -182,6 +193,10 @@ export class TerminalWatcher {
     const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
     const parseResult = traceback ? PythonTracebackParser.parse(traceback, workspaceFolders) : null;
     if (!parseResult) return;
+    if (isKeyboardInterruptError(parseResult)) {
+      console.log('TerminalWatcher: ignoring KeyboardInterrupt (manual stop)');
+      return;
+    }
 
     const errorKey = parseResult.errorType + '::' + parseResult.errorMessage.slice(0, 100);
     const now = Date.now();

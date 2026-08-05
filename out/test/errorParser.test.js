@@ -35,6 +35,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 const assert = __importStar(require("assert"));
 const pythonTraceback_1 = require("../src/parser/pythonTraceback");
+const terminalWatcher_1 = require("../src/terminalWatcher");
 suite('PythonTracebackParser', () => {
     const workspaceFolders = ['/home/user/project'];
     test('parses ZeroDivisionError with traceback', () => {
@@ -139,6 +140,41 @@ RuntimeError: Database query failed`;
     test('normalizeErrorKey works correctly', () => {
         const key = pythonTraceback_1.PythonTracebackParser.normalizeErrorKey('ZeroDivisionError', 'main.py');
         assert.strictEqual(key, 'zerodivisionerror:main.py');
+    });
+});
+suite('ManualStopFilter', () => {
+    test('ignores KeyboardInterrupt error type', () => {
+        assert.strictEqual((0, terminalWatcher_1.isKeyboardInterruptError)({
+            errorType: 'KeyboardInterrupt',
+            errorMessage: '',
+            filePath: '',
+            lineNumber: 0,
+            stackFrames: [],
+            fullTraceback: '',
+            chain: [],
+        }), true);
+    });
+    test('ignores parser fallback where KeyboardInterrupt is the message', () => {
+        assert.strictEqual((0, terminalWatcher_1.isKeyboardInterruptError)({
+            errorType: 'Error',
+            errorMessage: 'KeyboardInterrupt',
+            filePath: '',
+            lineNumber: 0,
+            stackFrames: [],
+            fullTraceback: '',
+            chain: [],
+        }), true);
+    });
+    test('keeps other errors', () => {
+        assert.strictEqual((0, terminalWatcher_1.isKeyboardInterruptError)({
+            errorType: 'ZeroDivisionError',
+            errorMessage: 'division by zero',
+            filePath: '/p/main.py',
+            lineNumber: 3,
+            stackFrames: [],
+            fullTraceback: '',
+            chain: [],
+        }), false);
     });
 });
 //# sourceMappingURL=errorParser.test.js.map

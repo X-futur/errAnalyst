@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import { PythonTracebackParser } from '../src/parser/pythonTraceback';
+import { isKeyboardInterruptError } from '../src/terminalWatcher';
 
 suite('PythonTracebackParser', () => {
   const workspaceFolders = ['/home/user/project'];
@@ -121,5 +122,52 @@ RuntimeError: Database query failed`;
   test('normalizeErrorKey works correctly', () => {
     const key = PythonTracebackParser.normalizeErrorKey('ZeroDivisionError', 'main.py');
     assert.strictEqual(key, 'zerodivisionerror:main.py');
+  });
+});
+
+suite('ManualStopFilter', () => {
+  test('ignores KeyboardInterrupt error type', () => {
+    assert.strictEqual(
+      isKeyboardInterruptError({
+        errorType: 'KeyboardInterrupt',
+        errorMessage: '',
+        filePath: '',
+        lineNumber: 0,
+        stackFrames: [],
+        fullTraceback: '',
+        chain: [],
+      }),
+      true,
+    );
+  });
+
+  test('ignores parser fallback where KeyboardInterrupt is the message', () => {
+    assert.strictEqual(
+      isKeyboardInterruptError({
+        errorType: 'Error',
+        errorMessage: 'KeyboardInterrupt',
+        filePath: '',
+        lineNumber: 0,
+        stackFrames: [],
+        fullTraceback: '',
+        chain: [],
+      }),
+      true,
+    );
+  });
+
+  test('keeps other errors', () => {
+    assert.strictEqual(
+      isKeyboardInterruptError({
+        errorType: 'ZeroDivisionError',
+        errorMessage: 'division by zero',
+        filePath: '/p/main.py',
+        lineNumber: 3,
+        stackFrames: [],
+        fullTraceback: '',
+        chain: [],
+      }),
+      false,
+    );
   });
 });
