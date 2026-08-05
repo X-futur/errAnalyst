@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { ErrorAnalysisResult } from '../config';
+import { resolveCoreTerm } from '../errorTerms';
 
 /**
  * Registers a temporary HoverProvider on the error file line
@@ -85,7 +86,9 @@ export class ErrorHoverProvider {
       if (aiData.keywords.length > 0) {
         md.appendMarkdown(`**关键词对应:**\n\n`);
         for (const kw of aiData.keywords) {
-          md.appendMarkdown(`- \`${kw.en}\` ↔ **${kw.cn}**\n`);
+          const cn = resolveCoreTerm(kw.en, kw.cn);
+          if (!cn) continue;
+          md.appendMarkdown(`- \`${kw.en}\` ↔ **${cn}**\n`);
         }
         md.appendMarkdown(`\n`);
       }

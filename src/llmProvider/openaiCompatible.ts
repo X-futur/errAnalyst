@@ -3,6 +3,7 @@ import * as http from 'http';
 import { URL } from 'url';
 import { ChatRequest, ChatTurn, LlmRequest, LlmResponse, LlmProvider } from './types';
 import { LlmProviderConfig } from '../config';
+import { ERROR_TERM_TRANSLATIONS, resolveCoreTerm } from '../errorTerms';
 import type { ParsedTraceback, ErrorCategory } from '../parser';
 import type { BuiltContext } from '../context/contextBuilder';
 
@@ -122,6 +123,8 @@ function buildSystemPrompt(category: ErrorCategory): string {
 - analysis: string（中文根因分析，必须引用具体行号，格式为 "文件:行号"）
 - fixSuggestion: string（中文修复建议，纯文字描述，不需要代码；必须点名问题文件、给出“文件:行号”引用和分步操作；如果根因在代码之外（环境、服务、配置未就绪等），说明外部原因并给出用户操作步骤）
 ${category === 'UNKNOWN' ? '- category: string（你判断的错误类别，可选值：COMPILATION_ERROR/DEPENDENCY_ERROR/SYSTEM_ERROR/RUNTIME_ERROR/UNKNOWN）\n' : ''}
+常见错误类型译名参考（翻译正文与核心报错术语必须使用这些译名）：
+${Object.entries(ERROR_TERM_TRANSLATIONS).map(([en, cn]) => `${en} → ${cn}`).join('\n')}
 注意：只返回 JSON，不要包含其他文字。`;
 }
 
@@ -257,9 +260,10 @@ export interface AiAnalysisResult {
 const MAX_CORE_TERMS = 3;
 
 /**
- * Mechanical guard for the "core error term" rule: cap at 3, require both
- * cn/en, dedupe case-insensitively, and drop terms that cannot be traced
- * back to the original error text.
+ * Mechanical guard for the "core error term" rule: cap at 3, resolve the
+ * authoritative dictionary translation, dedupe case-insensitively, drop
+ * terms that cannot be traced back to the original error text, and drop
+ * terms without a valid Chinese translation.
  */
 export function sanitizeKeywords(
   keywords: Array<{ cn: string; en: string }> | undefined,
@@ -274,12 +278,14 @@ export function sanitizeKeywords(
     if (!raw || typeof raw !== 'object') continue;
     const en = typeof raw.en === 'string' ? raw.en.trim() : '';
     const cn = typeof raw.cn === 'string' ? raw.cn.trim() : '';
-    if (!en || !cn) continue;
+    if (!en) continue;
     const key = en.toLowerCase();
     if (seen.has(key)) continue;
     if (source && !source.includes(key)) continue;
+    const resolvedCn = resolveCoreTerm(en, cn);
+    if (!resolvedCn) continue;
     seen.add(key);
-    result.push({ cn, en });
+    result.push({ cn: resolvedCn, en });
   }
   return result;
 }

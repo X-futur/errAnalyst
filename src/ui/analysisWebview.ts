@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { Config, ErrorAnalysisResult } from '../config';
+import { resolveCoreTerm } from '../errorTerms';
 import type { BuiltContext, FileContext } from '../context/contextBuilder';
 import type { FixViewSnapshot } from '../fix/session';
 import type { ChatViewSnapshot } from '../chat/types';
@@ -227,9 +228,11 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
     let kwPills = '';
     if (aiData) {
       for (const kw of aiData.keywords) {
-        kwPills += '<span class="keyword-badge" data-en="' + this.esc(kw.en) + '" data-cn="' + this.esc(kw.cn) + '">'
+        const cn = resolveCoreTerm(kw.en, kw.cn);
+        if (!cn) continue;
+        kwPills += '<span class="keyword-badge" data-en="' + this.esc(kw.en) + '" data-cn="' + this.esc(cn) + '">'
           + '<span class="kw-en">' + this.esc(kw.en) + '</span> ↔ '
-          + '<span class="kw-cn">' + this.esc(kw.cn) + '</span>'
+          + '<span class="kw-cn">' + this.esc(cn) + '</span>'
           + '</span>';
       }
     }

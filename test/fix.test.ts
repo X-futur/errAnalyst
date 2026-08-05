@@ -183,6 +183,30 @@ suite('CoreTermSanitizer', () => {
     assert.deepStrictEqual(result, [{ cn: '向量嵌入', en: 'embedding' }]);
   });
 
+  test('uses dictionary translation over LLM', () => {
+    const result = sanitizeKeywords(
+      [{ cn: '错误响应', en: 'ResponseError' }],
+      'ResponseError: request failed',
+    );
+    assert.deepStrictEqual(result, [{ cn: '响应错误', en: 'ResponseError' }]);
+  });
+
+  test('fills missing cn from the dictionary', () => {
+    const result = sanitizeKeywords(
+      [{ cn: '', en: 'OptionalError' }],
+      'OptionalError: expected value',
+    );
+    assert.deepStrictEqual(result, [{ cn: '可选值错误', en: 'OptionalError' }]);
+  });
+
+  test('drops terms whose cn equals en', () => {
+    const result = sanitizeKeywords(
+      [{ cn: 'sqlite3', en: 'sqlite3' }],
+      'sqlite3.OperationalError: no such table',
+    );
+    assert.deepStrictEqual(result, []);
+  });
+
   test('returns empty for non-array input', () => {
     assert.deepStrictEqual(sanitizeKeywords(undefined, 'traceback'), []);
     assert.deepStrictEqual(sanitizeKeywords({} as any, 'traceback'), []);
@@ -205,6 +229,8 @@ suite('TranslationPrompt', () => {
     );
     assert.ok(prompts.systemPrompt.includes('必须译成中文'));
     assert.ok(prompts.systemPrompt.includes('最多 3 个'));
+    assert.ok(prompts.systemPrompt.includes('ResponseError → 响应错误'));
+    assert.ok(prompts.systemPrompt.includes('OptionalError → 可选值错误'));
     assert.ok(prompts.userPrompt.includes('Translatable technical concepts MUST be translated into Chinese'));
     assert.ok(prompts.userPrompt.includes('Core error terms for this error, 0-3 items'));
     assert.ok(prompts.userPrompt.includes('Exclude generic English words/phrases'));
