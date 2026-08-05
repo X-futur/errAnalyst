@@ -658,7 +658,7 @@ async function autoAnalyze(result, category, options) {
         return;
     }
     // ── Parse AI response ──
-    const parsed = (0, llmProvider_1.parseAiResponse)(response.content);
+    const parsed = (0, llmProvider_1.parseAiResponse)(response.content, result.fullTraceback || parsedTraceback.fullTraceback);
     if (!parsed) {
         console.log('=== ErrAnalyst: Failed to parse LLM response ===');
         console.log('Raw content:', response.content.slice(0, 500));

@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import { parseFixResponse } from '../src/fix/prompt';
 import { diffLines, findLineRange, findLineRangeAt } from '../src/fix/validator';
-import { buildAnalysisPrompts } from '../src/llmProvider/openaiCompatible';
+import { buildAnalysisPrompts, sanitizeKeywords } from '../src/llmProvider/openaiCompatible';
 
 suite('FixPrompt', () => {
   test('parses valid structured fix response', () => {
@@ -143,5 +143,70 @@ suite('FixPromptDefense', () => {
     );
     assert.ok(prompts.userPrompt.length > 0);
     assert.ok(prompts.userPrompt.includes('## Original Traceback'));
+  });
+});
+
+suite('CoreTermSanitizer', () => {
+  test('caps at 3 keywords', () => {
+    const keywords = [
+      { cn: '一', en: 'one' },
+      { cn: '二', en: 'two' },
+      { cn: '三', en: 'three' },
+      { cn: '四', en: 'four' },
+    ];
+    assert.strictEqual(sanitizeKeywords(keywords, 'one two three four').length, 3);
+  });
+
+  test('drops empty cn or en', () => {
+    const keywords = [
+      { cn: '', en: 'one' },
+      { cn: '二', en: '' },
+      { cn: '三', en: 'three' },
+    ];
+    assert.deepStrictEqual(sanitizeKeywords(keywords, 'three'), [{ cn: '三', en: 'three' }]);
+  });
+
+  test('dedupes case-insensitively', () => {
+    const keywords = [
+      { cn: '一', en: 'OptionalError' },
+      { cn: '二', en: 'optionalerror' },
+    ];
+    assert.strictEqual(sanitizeKeywords(keywords, 'OptionalError').length, 1);
+  });
+
+  test('drops terms missing from the traceback', () => {
+    const keywords = [
+      { cn: '向量嵌入', en: 'embedding' },
+      { cn: '状态码', en: 'status code' },
+    ];
+    const result = sanitizeKeywords(keywords, 'embedding dimension mismatch');
+    assert.deepStrictEqual(result, [{ cn: '向量嵌入', en: 'embedding' }]);
+  });
+
+  test('returns empty for non-array input', () => {
+    assert.deepStrictEqual(sanitizeKeywords(undefined, 'traceback'), []);
+    assert.deepStrictEqual(sanitizeKeywords({} as any, 'traceback'), []);
+  });
+});
+
+suite('TranslationPrompt', () => {
+  test('requires natural Chinese translation and core-term keywords', () => {
+    const prompts = buildAnalysisPrompts(
+      {
+        errorType: 'OptionalError',
+        errorMessage: 'expected value but got none',
+        filePath: '/p/main.py',
+        lineNumber: 3,
+        stackFrames: [],
+        fullTraceback: 'OptionalError: expected value but got none',
+        chain: [],
+      },
+      'UNKNOWN' as any,
+    );
+    assert.ok(prompts.systemPrompt.includes('必须译成中文'));
+    assert.ok(prompts.systemPrompt.includes('最多 3 个'));
+    assert.ok(prompts.userPrompt.includes('Translatable technical concepts MUST be translated into Chinese'));
+    assert.ok(prompts.userPrompt.includes('Core error terms for this error, 0-3 items'));
+    assert.ok(prompts.userPrompt.includes('Exclude generic English words/phrases'));
   });
 });

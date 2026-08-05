@@ -117,8 +117,8 @@ function buildSystemPrompt(category: ErrorCategory): string {
 输出 JSON 格式，字段：
 - errorType: string（原始错误类型，与输入一致）
 - errorMessage: string（原始错误消息，与输入一致）
-- translation: string（中文翻译，用 {{keyword}} 包裹英文术语）
-- keywords: [{cn: string, en: string}]（中英术语对照表）
+- translation: string（中文翻译：自然、专业、流畅；可翻译的技术概念必须译成中文，如 embedding → 向量嵌入；无法翻译的专有名词保留原文并紧跟括号简释，如 OptionalError（可选值错误）；禁止使用 {{keyword}} 标记）
+- keywords: [{cn: string, en: string}]（核心报错术语，最多 3 个，可为空数组；只收能指认本报错主题的词或短语，专有名词/标识符出现即收，领域概念词仅在与根因直接相关且翻译有增量时收，普通英文词如 status code 不收）
 - analysis: string（中文根因分析，必须引用具体行号，格式为 "文件:行号"）
 - fixSuggestion: string（中文修复建议，纯文字描述，不需要代码；必须点名问题文件、给出“文件:行号”引用和分步操作；如果根因在代码之外（环境、服务、配置未就绪等），说明外部原因并给出用户操作步骤）
 ${category === 'UNKNOWN' ? '- category: string（你判断的错误类别，可选值：COMPILATION_ERROR/DEPENDENCY_ERROR/SYSTEM_ERROR/RUNTIME_ERROR/UNKNOWN）\n' : ''}
@@ -227,8 +227,8 @@ function buildUserPrompt(
   lines.push('');
   lines.push('Analyze the Python error above and provide:');
   lines.push('');
-  lines.push('1. translation: Chinese translation of the error message, wrap English terms with {{keyword}} markers');
-  lines.push('2. keywords: Chinese-English term mapping table');
+  lines.push('1. translation: Natural, professional, fluent Chinese translation of the error message. Translatable technical concepts MUST be translated into Chinese (e.g., embedding -> 向量嵌入). Proper nouns that cannot be translated (exception names, API/library/model names, paths, commands, config keys) keep the original text and MUST be followed immediately by a parenthetical short explanation (e.g., OptionalError（可选值错误）). Do NOT use {{keyword}} markers.');
+  lines.push('2. keywords: Core error terms for this error, 0-3 items, each {cn, en}. Include identifiers/proper nouns that appear in the traceback (exception types, class/function names, API/library/framework/model names). Include a domain concept word (e.g., embedding) only when it is directly tied to the root cause AND its Chinese explanation adds real value. Exclude generic English words/phrases (e.g., status code, connection, value). Put the most meaningful term first (usually the exception type).');
   lines.push('3. analysis: Root cause analysis in Chinese, MUST reference specific file:line numbers from the Source Context or Parsed Error Data');
   lines.push('4. fixSuggestion: Fix suggestion in Chinese, text description only, no code; must name the problem file, cite "file:line" references, and give step-by-step actions; if the root cause is outside the code (environment/service/config not ready), explain the external cause and give operational steps only');
   if (category === 'UNKNOWN') {
@@ -254,7 +254,37 @@ export interface AiAnalysisResult {
   category?: string;
 }
 
-export function parseAiResponse(content: string): AiAnalysisResult | null {
+const MAX_CORE_TERMS = 3;
+
+/**
+ * Mechanical guard for the "core error term" rule: cap at 3, require both
+ * cn/en, dedupe case-insensitively, and drop terms that cannot be traced
+ * back to the original error text.
+ */
+export function sanitizeKeywords(
+  keywords: Array<{ cn: string; en: string }> | undefined,
+  sourceText?: string,
+): Array<{ cn: string; en: string }> {
+  if (!Array.isArray(keywords)) return [];
+  const source = sourceText ? sourceText.toLowerCase() : '';
+  const seen = new Set<string>();
+  const result: Array<{ cn: string; en: string }> = [];
+  for (const raw of keywords) {
+    if (result.length >= MAX_CORE_TERMS) break;
+    if (!raw || typeof raw !== 'object') continue;
+    const en = typeof raw.en === 'string' ? raw.en.trim() : '';
+    const cn = typeof raw.cn === 'string' ? raw.cn.trim() : '';
+    if (!en || !cn) continue;
+    const key = en.toLowerCase();
+    if (seen.has(key)) continue;
+    if (source && !source.includes(key)) continue;
+    seen.add(key);
+    result.push({ cn, en });
+  }
+  return result;
+}
+
+export function parseAiResponse(content: string, sourceText?: string): AiAnalysisResult | null {
   try {
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return null;
@@ -263,7 +293,7 @@ export function parseAiResponse(content: string): AiAnalysisResult | null {
       errorType: data.errorType || '',
       errorMessage: data.errorMessage || '',
       translation: data.translation || '',
-      keywords: data.keywords || [],
+      keywords: sanitizeKeywords(data.keywords, sourceText),
       analysis: data.analysis || '',
       fixSuggestion: data.fixSuggestion || '',
       category: data.category,

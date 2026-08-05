@@ -4,6 +4,7 @@ import type { ChainEntry, StackFrame } from '../parser';
 import * as errStore from '../shared/err-store';
 
 export interface CacheEntry {
+  format: string;
   errorKey: string;
   errorType: string;
   errorMessage: string;
@@ -23,6 +24,7 @@ export interface CacheEntry {
 }
 
 const MAX_CACHE_SIZE = 200;
+const CACHE_FORMAT = 'core-terms-v1';
 
 export class ErrorMemory {
   private cache: Map<string, CacheEntry> = new Map();
@@ -31,7 +33,14 @@ export class ErrorMemory {
   async init(): Promise<void> {
     if (this.initialized) return;
     try {
-      for (const entry of errStore.readCache()) {
+      const entries = errStore.readCache();
+      if (entries.length > 0 && entries.some(e => e.format !== CACHE_FORMAT)) {
+        errStore.clearCache();
+        console.log('ErrAnalyst: 缓存格式已升级，已清空旧缓存');
+        this.initialized = true;
+        return;
+      }
+      for (const entry of entries) {
         entry.translation = entry.translation || '';
         entry.keywords = entry.keywords || [];
         entry.analysis = entry.analysis || '';
@@ -56,6 +65,7 @@ export class ErrorMemory {
     const errorKey = buildErrorKey(result.errorType, result.stackFrames);
 
     const entry: CacheEntry = {
+      format: CACHE_FORMAT,
       errorKey,
       errorType: result.errorType,
       errorMessage: result.errorMessage,
