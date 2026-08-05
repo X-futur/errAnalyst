@@ -596,11 +596,25 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
       }
     };
 
-    for (const rawLine of lines) {
+    let i = 0;
+    while (i < lines.length) {
+      const rawLine = lines[i];
+      if (this.isTableRow(rawLine)) {
+        const rows = [rawLine];
+        while (i + 1 < lines.length && this.isTableRow(lines[i + 1])) {
+          i += 1;
+          rows.push(lines[i]);
+        }
+        closeList();
+        out.push(this.renderChatTable(rows));
+        i += 1;
+        continue;
+      }
       const heading = rawLine.match(/^\s{0,3}(#{1,4})\s+(.*)$/);
       if (heading) {
         closeList();
         out.push('<h4 class="chat-h">' + this.renderChatInline(heading[2]) + '</h4>');
+        i += 1;
         continue;
       }
       const ul = rawLine.match(/^\s*[-*]\s+(.*)$/);
@@ -611,6 +625,7 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
           listOpen = 'ul';
         }
         out.push('<li>' + this.renderChatInline(ul[1]) + '</li>');
+        i += 1;
         continue;
       }
       const ol = rawLine.match(/^\s*(\d+)\.\s+(.*)$/);
@@ -621,6 +636,7 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
           listOpen = 'ol';
         }
         out.push('<li>' + this.renderChatInline(ol[2]) + '</li>');
+        i += 1;
         continue;
       }
       closeList();
@@ -629,9 +645,50 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
       } else {
         out.push('<p class="chat-p">' + this.renderChatInline(rawLine) + '</p>');
       }
+      i += 1;
     }
     closeList();
     return out.join('');
+  }
+
+  private isTableRow(line: string): boolean {
+    return /^\s*\|/.test(line);
+  }
+
+  private splitTableRow(row: string): string[] {
+    return row.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+  }
+
+  private renderChatTable(rows: string[]): string {
+    const split = rows.map(row => this.splitTableRow(row));
+    let head: string[] | null = null;
+    let bodyRows = split;
+    let aligns: string[] = [];
+    if (split.length >= 2 && split[1].every(cell => /^:?-{2,}:?$/.test(cell))) {
+      head = split[0];
+      bodyRows = split.slice(2);
+      aligns = split[1].map(cell =>
+        cell.startsWith(':')
+          ? (cell.endsWith(':') ? 'ta-c' : 'ta-l')
+          : (cell.endsWith(':') ? 'ta-r' : '')
+      );
+    }
+    const cls = (idx: number) => aligns[idx] ? ' class="' + aligns[idx] + '"' : '';
+    let html = '<table class="chat-table">';
+    if (head) {
+      html += '<thead><tr>'
+        + head.map((cell, idx) => '<th' + cls(idx) + '>' + this.renderChatInline(cell) + '</th>').join('')
+        + '</tr></thead>';
+    }
+    if (bodyRows.length > 0) {
+      html += '<tbody>';
+      for (const row of bodyRows) {
+        html += '<tr>' + row.map((cell, idx) => '<td' + cls(idx) + '>' + this.renderChatInline(cell) + '</td>').join('') + '</tr>';
+      }
+      html += '</tbody>';
+    }
+    html += '</table>';
+    return html;
   }
 
   private renderChatInline(text: string): string {
@@ -778,6 +835,10 @@ h3{margin-bottom:8px;font-size:14px;}h4{font-size:11px;text-transform:uppercase;
 .chat-msg-body li{margin:2px 0;}
 .chat-msg-body code{font-family:Consolas,Monaco,monospace;font-size:11px;background:rgba(0,0,0,.3);padding:1px 3px;border-radius:3px;}
 .chat-code{font-family:Consolas,Monaco,monospace;font-size:11px;line-height:1.5;background:transparent;border:none;border-left:2px solid var(--border);border-radius:0;padding:4px 0 4px 8px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;margin:4px 0;}
+.chat-table{display:block;overflow-x:auto;border-collapse:collapse;margin:4px 0;font-size:11px;max-width:100%;}
+.chat-table th,.chat-table td{border:1px solid var(--border);padding:3px 8px;text-align:left;vertical-align:top;white-space:nowrap;}
+.chat-table th{background:rgba(128,128,128,.14);font-weight:600;white-space:nowrap;}
+.chat-table .ta-l{text-align:left;}.chat-table .ta-c{text-align:center;}.chat-table .ta-r{text-align:right;}
 .chat-h{margin:6px 0 2px;}
 .chat-p{margin:2px 0;}
 .chat-input-row{display:flex;gap:6px;align-items:flex-end;border-top:1px solid var(--border);padding-top:6px;}
@@ -933,11 +994,25 @@ ${sourceInfoHtml}
       }
     };
 
-    for (const rawLine of lines) {
+    let i = 0;
+    while (i < lines.length) {
+      const rawLine = lines[i];
+      if (isTableRow(rawLine)) {
+        const rows = [rawLine];
+        while (i + 1 < lines.length && isTableRow(lines[i + 1])) {
+          i += 1;
+          rows.push(lines[i]);
+        }
+        closeList();
+        out.push(renderChatTable(rows));
+        i += 1;
+        continue;
+      }
       const heading = rawLine.match(/^\\s{0,3}(#{1,4})\\s+(.*)$/);
       if (heading) {
         closeList();
         out.push('<h4 class="chat-h">' + renderChatInline(heading[2]) + '</h4>');
+        i += 1;
         continue;
       }
       const ul = rawLine.match(/^\\s*[-*]\\s+(.*)$/);
@@ -948,6 +1023,7 @@ ${sourceInfoHtml}
           listOpen = 'ul';
         }
         out.push('<li>' + renderChatInline(ul[1]) + '</li>');
+        i += 1;
         continue;
       }
       const ol = rawLine.match(/^\\s*(\\d+)\\.\\s+(.*)$/);
@@ -958,6 +1034,7 @@ ${sourceInfoHtml}
           listOpen = 'ol';
         }
         out.push('<li>' + renderChatInline(ol[2]) + '</li>');
+        i += 1;
         continue;
       }
       closeList();
@@ -966,9 +1043,57 @@ ${sourceInfoHtml}
       } else {
         out.push('<p class="chat-p">' + renderChatInline(rawLine) + '</p>');
       }
+      i += 1;
     }
     closeList();
     return out.join('');
+  }
+
+  function isTableRow(line) {
+    return /^\\s*\\|/.test(line);
+  }
+
+  function splitTableRow(row) {
+    return row.trim().replace(/^\\||\\|$/g, '').split('|').map(function(c) { return c.trim(); });
+  }
+
+  function renderChatTable(rows) {
+    const split = rows.map(splitTableRow);
+    let head = null;
+    let bodyRows = split;
+    let aligns = [];
+    if (split.length >= 2 && split[1].every(function(cell) { return /^:?-{2,}:?$/.test(cell); })) {
+      head = split[0];
+      bodyRows = split.slice(2);
+      aligns = split[1].map(function(cell) {
+        if (cell.startsWith(':')) {
+          return cell.endsWith(':') ? 'ta-c' : 'ta-l';
+        }
+        return cell.endsWith(':') ? 'ta-r' : '';
+      });
+    }
+    const cls = function(idx) { return aligns[idx] ? ' class="' + aligns[idx] + '"' : ''; };
+    let html = '<table class="chat-table">';
+    if (head) {
+      html += '<thead><tr>';
+      for (let j = 0; j < head.length; j++) {
+        html += '<th' + cls(j) + '>' + renderChatInline(head[j]) + '</th>';
+      }
+      html += '</tr></thead>';
+    }
+    if (bodyRows.length > 0) {
+      html += '<tbody>';
+      for (const row of bodyRows) {
+        html += '<tr>';
+        for (let j = 0; j < row.length; j++) {
+          html += '<td' + cls(j) + '>' + renderChatInline(row[j]) + '</td>';
+        }
+        html += '</tr>';
+      }
+      html += '</tbody>';
+    }
+    html += '</table>';
+    return html;
   }
 
   function renderChatMarkdown(text) {
