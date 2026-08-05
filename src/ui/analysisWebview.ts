@@ -12,6 +12,8 @@ type AiAnalysisViewData = {
   fixSuggestion: string;
 };
 
+const FILE_PATH_LINK_REGEX = /([A-Za-z0-9_./\\-]+(?:\.(?:py|js|jsx|ts|tsx|mjs|cjs|json|jsonc|ya?ml|toml|env|cfg|ini|conf|txt|md|markdown|html|css|scss|csv|tsv|log|sh|sql|xml|lock|gitignore|editorconfig)|(?:Dockerfile|Makefile|Gemfile|Rakefile|Procfile|Vagrantfile))):(\d+)/g;
+
 interface ShowOptions {
   fromCache?: boolean;
   cachedAt?: number;
@@ -635,20 +637,21 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
 
   /** Broader file:line linking for chat replies (config and code files alike). */
   private makeBroadFileLinksClickable(text: string): string {
-    return text.replace(
-      /([A-Za-z0-9_./\\-]+\.(?:py|js|ts|json|ya?ml|toml|env|cfg|ini|txt|md|html|css)):(\d+)/g,
-      '<a href="#" class="file-link" data-file="$1" data-line="$2">$1:$2</a>'
-    );
+    return this.makeFileLinksClickable(text);
   }
 
   /**
    * Convert "file:line" references in text into clickable links.
    */
   private makeFileLinksClickable(text: string): string {
-    // Replace "file.py:123" with a clickable link
     return text.replace(
-      /([a-zA-Z0-9_./\\-]+\.py):(\d+)/g,
-      '<a href="#" class="file-link" data-file="$1" data-line="$2">$1:$2</a>'
+      FILE_PATH_LINK_REGEX,
+      (_match, file: string, line: string) => {
+        // Keep the original path in data-file, but add break opportunities
+        // after path separators so long paths wrap instead of widening the row.
+        const wrappedFile = file.replace(/\//g, '/<wbr>').replace(/\\/g, '\\<wbr>');
+        return `<a href="#" class="file-link" data-file="${file}" data-line="${line}">${wrappedFile}:${line}</a>`;
+      }
     );
   }
 
