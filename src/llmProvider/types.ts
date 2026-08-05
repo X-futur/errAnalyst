@@ -14,8 +14,10 @@ export interface ChatTurn {
 export interface ChatRequest {
   messages: ChatTurn[];
   timeout: number;
-  /** Reserved for future streaming support. First version ignores this flag. */
+  /** When true, the provider streams the reply via onChunk instead of waiting for the full body. */
   stream?: boolean;
+  /** Called once per streamed content delta (only when stream is enabled). */
+  onChunk?: (delta: string) => void;
 }
 
 export interface LlmResponse {

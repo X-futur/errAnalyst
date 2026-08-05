@@ -59,18 +59,27 @@ class OpenAICompatibleProvider {
         const messages = request.messages.length > 0
             ? request.messages
             : [{ role: 'user', content: '你好，请围绕当前报错继续分析。' }];
-        return this.complete(messages, request.timeout);
+        return this.complete(messages, request.timeout, request.stream ? request.onChunk : undefined);
     }
-    complete(messages, timeout) {
+    complete(messages, timeout, onChunk) {
         const baseUrl = this.config.baseUrl.replace(/\/+$/, '');
         const url = new url_1.URL(`${baseUrl}/chat/completions`);
+        const useStream = typeof onChunk === 'function';
         const body = JSON.stringify({
             model: this.config.model,
             messages,
             temperature: 0.1,
-            max_tokens: 4096
+            max_tokens: 4096,
+            ...(useStream ? { stream: true } : {}),
         });
         return new Promise((resolve) => {
+            let settled = false;
+            const finish = (result) => {
+                if (settled)
+                    return;
+                settled = true;
+                resolve(result);
+            };
             const options = {
                 hostname: url.hostname,
                 port: url.port || (url.protocol === 'https:' ? 443 : 80),
@@ -85,32 +94,98 @@ class OpenAICompatibleProvider {
             };
             const client = url.protocol === 'https:' ? https : http;
             const req = client.request(options, (res) => {
-                let data = '';
-                res.on('data', (chunk) => { data += chunk; });
-                res.on('end', () => {
-                    try {
-                        const parsed = JSON.parse(data);
-                        if (parsed.error) {
-                            resolve({ content: '', success: false, error: parsed.error.message });
-                            return;
+                if (!useStream) {
+                    let data = '';
+                    res.on('data', (chunk) => { data += chunk; });
+                    res.on('end', () => {
+                        try {
+                            const parsed = JSON.parse(data);
+                            if (parsed.error) {
+                                finish({ content: '', success: false, error: parsed.error.message });
+                                return;
+                            }
+                            const content = parsed.choices?.[0]?.message?.content || '';
+                            console.log('=== ErrAnalyst LLM 完整返回 ===');
+                            console.log(content);
+                            console.log('=== End ===');
+                            finish({ content, success: true });
                         }
-                        const content = parsed.choices?.[0]?.message?.content || '';
-                        console.log('=== ErrAnalyst LLM 完整返回 ===');
-                        console.log(content);
-                        console.log('=== End ===');
-                        resolve({ content, success: true });
+                        catch (e) {
+                            finish({ content: '', success: false, error: `JSON parse error: ${e}` });
+                        }
+                    });
+                    return;
+                }
+                // Streaming (OpenAI-compatible SSE): each data line is a chat.completion.chunk.
+                let buffer = '';
+                let raw = '';
+                let content = '';
+                let streamError = null;
+                res.on('data', (chunk) => {
+                    const text = chunk.toString();
+                    raw += text;
+                    buffer += text;
+                    let nl;
+                    while ((nl = buffer.indexOf('\n')) !== -1) {
+                        const line = buffer.slice(0, nl).trim();
+                        buffer = buffer.slice(nl + 1);
+                        if (!line.startsWith('data:'))
+                            continue;
+                        const data = line.slice(5).trim();
+                        if (!data || data === '[DONE]')
+                            continue;
+                        let parsed;
+                        try {
+                            parsed = JSON.parse(data);
+                        }
+                        catch {
+                            continue;
+                        }
+                        if (parsed.error) {
+                            streamError = parsed.error.message || 'AI 请求失败';
+                            continue;
+                        }
+                        const choice = parsed.choices?.[0];
+                        const delta = choice?.delta?.content ?? choice?.message?.content;
+                        if (typeof delta === 'string' && delta.length > 0) {
+                            content += delta;
+                            onChunk?.(delta);
+                        }
                     }
-                    catch (e) {
-                        resolve({ content: '', success: false, error: `JSON parse error: ${e}` });
+                });
+                res.on('error', (e) => {
+                    finish({ content, success: false, error: `Stream failed: ${e.message}` });
+                });
+                res.on('end', () => {
+                    if (streamError) {
+                        finish({ content, success: false, error: streamError });
+                        return;
                     }
+                    // Fallback: some providers ignore stream:true and return a plain
+                    // JSON body instead of SSE lines.
+                    if (!content && raw.trim()) {
+                        try {
+                            const parsed = JSON.parse(raw);
+                            content = parsed.choices?.[0]?.message?.content || '';
+                            if (content)
+                                onChunk?.(content);
+                        }
+                        catch {
+                            // keep empty content; the caller reports the raw failure below
+                        }
+                    }
+                    console.log('=== ErrAnalyst LLM 完整返回 ===');
+                    console.log(content);
+                    console.log('=== End ===');
+                    finish({ content, success: true });
                 });
             });
             req.on('error', (e) => {
-                resolve({ content: '', success: false, error: `Request failed: ${e.message}` });
+                finish({ content: '', success: false, error: `Request failed: ${e.message}` });
             });
             req.on('timeout', () => {
                 req.destroy();
-                resolve({ content: '', success: false, error: 'Request timeout' });
+                finish({ content: '', success: false, error: 'Request timeout' });
             });
             req.write(body);
             req.end();

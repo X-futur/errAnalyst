@@ -105,6 +105,38 @@ suite('ChatSession', () => {
       ['q1', 'a1'],
     );
   });
+
+  test('streams an assistant reply in place without emitting per chunk', () => {
+    const snapshots: any[] = [];
+    const session = new ChatSessionManager(s => snapshots.push(s));
+    session.startForError([]);
+    session.addUserMessage('继续');
+    const before = snapshots.length;
+
+    const id = session.beginAssistantMessage();
+    assert.strictEqual(snapshots.length, before, 'begin must not rebuild the webview');
+    session.updateAssistantMessage(id, '第一段');
+    assert.strictEqual(snapshots.length, before, 'chunk updates must not rebuild the webview');
+    session.updateAssistantMessage(id, '第一段\n第二段');
+
+    session.setSending(false);
+    const messages = session.snapshot().messages;
+    assert.strictEqual(messages.length, 2);
+    assert.strictEqual(messages[1].role, 'assistant');
+    assert.strictEqual(messages[1].content, '第一段\n第二段');
+  });
+
+  test('removes a stream that failed before producing any token', () => {
+    const session = new ChatSessionManager(() => undefined);
+    session.startForError([]);
+    session.addUserMessage('q');
+    const id = session.beginAssistantMessage();
+    session.removeAssistantMessage(id);
+    assert.deepStrictEqual(
+      session.snapshot().messages.map(m => m.content),
+      ['q'],
+    );
+  });
 });
 
 suite('ChatContext', () => {

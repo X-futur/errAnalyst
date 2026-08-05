@@ -386,6 +386,8 @@ async function runChatTurn(content: string): Promise<void> {
   chatSessionManager.addUserMessage(text);
   chatSessionManager.setSending(true);
   chatSessionManager.setError(null);
+  let streamed = '';
+  let messageId: string | null = null;
   try {
     const traceback = parsedTracebackFromResult(lastError);
     const payload = chatSessionManager.buildContextPayload();
@@ -397,13 +399,39 @@ async function runChatTurn(content: string): Promise<void> {
       history,
       question: text,
     });
-    const response = await llm.chat({ messages, timeout: config.getAiTimeout() });
+    const msgId = chatSessionManager.beginAssistantMessage();
+    messageId = msgId;
+    const response = await llm.chat({
+      messages,
+      timeout: config.getAiTimeout(),
+      stream: true,
+      onChunk: (delta) => {
+        streamed += delta;
+        analysisViewProvider.streamChatChunk(msgId, streamed);
+      },
+    });
     if (response.success) {
-      chatSessionManager.appendAssistantMessage(response.content);
+      if (messageId) {
+        chatSessionManager.updateAssistantMessage(messageId, response.content || streamed);
+      }
     } else {
+      if (messageId) {
+        if (streamed) {
+          chatSessionManager.updateAssistantMessage(messageId, streamed);
+        } else {
+          chatSessionManager.removeAssistantMessage(messageId);
+        }
+      }
       chatSessionManager.setError('AI 请求失败: ' + (response.error || '未知错误'));
     }
   } catch (e) {
+    if (messageId) {
+      if (streamed) {
+        chatSessionManager.updateAssistantMessage(messageId, streamed);
+      } else {
+        chatSessionManager.removeAssistantMessage(messageId);
+      }
+    }
     chatSessionManager.setError(e instanceof Error ? e.message : String(e));
   } finally {
     chatSessionManager.setSending(false);

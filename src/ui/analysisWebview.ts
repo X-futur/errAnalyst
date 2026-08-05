@@ -142,6 +142,11 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
     this.updateContent();
   }
 
+  /** Forwards one streamed chunk to the webview without rebuilding the page. */
+  streamChatChunk(messageId: string, content: string): void {
+    void this.view?.webview.postMessage({ type: 'chatChunk', messageId, content });
+  }
+
   private handleWebviewMessage(msg: any): void {
     switch (msg.type) {
       case 'openFile':
@@ -765,6 +770,8 @@ h3{margin-bottom:8px;font-size:14px;}h4{font-size:11px;text-transform:uppercase;
 .chat-msg.user .chat-msg-body{background:transparent;border-color:transparent;}
 .chat-msg.notice{text-align:center;color:var(--text-muted);font-size:11px;}
 .chat-msg.notice.error{color:#f48771;}
+.chat-msg.streaming .chat-msg-body::after{content:'▋';color:var(--accent);margin-left:2px;animation:streamBlink 1s step-start infinite;}
+@keyframes streamBlink{50%{opacity:0;}}
 .chat-msg-body p{margin:0 0 4px;}.chat-msg-body p:last-child{margin-bottom:0;}
 .chat-msg-body ul,.chat-msg-body ol{margin:4px 0 4px 18px;}
 .chat-msg-body li{margin:2px 0;}
@@ -891,6 +898,116 @@ ${sourceInfoHtml}
   window.chatAddFiles = function() {
     vscode.postMessage({ type: 'chatAddFiles' });
   };
+
+  // ── Streaming chat output ──
+  const FILE_LINK_RE = /([A-Za-z0-9_./\\\\-]+(?:\\.(?:py|js|jsx|ts|tsx|mjs|cjs|json|jsonc|ya?ml|toml|env|cfg|ini|conf|txt|md|markdown|html|css|scss|csv|tsv|log|sh|sql|xml|lock|gitignore|editorconfig)|(?:Dockerfile|Makefile|Gemfile|Rakefile|Procfile|Vagrantfile))):(\\d+)/g;
+
+  function escHtml(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+  }
+
+  function linkifyFileLines(text) {
+    return text.replace(FILE_LINK_RE, function(_m, file, line) {
+      const wrappedFile = file.replace(/\\//g, '/<wbr>').replace(/\\\\/g, '\\\\<wbr>');
+      return '<a href="#" class="file-link" data-file="' + escHtml(file) + '" data-line="' + line + '">'
+        + wrappedFile + ':' + line + '</a>';
+    });
+  }
+
+  function renderChatInline(text) {
+    let html = text.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
+    html = html.replace(/\`([^\`]+)\`/g, '<code>$1</code>');
+    return linkifyFileLines(html);
+  }
+
+  function renderChatInlineBlock(block) {
+    const lines = block.split('\\n');
+    const out = [];
+    let listOpen = null;
+    const closeList = function() {
+      if (listOpen) {
+        out.push('</' + listOpen + '>');
+        listOpen = null;
+      }
+    };
+
+    for (const rawLine of lines) {
+      const heading = rawLine.match(/^\\s{0,3}(#{1,4})\\s+(.*)$/);
+      if (heading) {
+        closeList();
+        out.push('<h4 class="chat-h">' + renderChatInline(heading[2]) + '</h4>');
+        continue;
+      }
+      const ul = rawLine.match(/^\\s*[-*]\\s+(.*)$/);
+      if (ul) {
+        if (listOpen !== 'ul') {
+          closeList();
+          out.push('<ul>');
+          listOpen = 'ul';
+        }
+        out.push('<li>' + renderChatInline(ul[1]) + '</li>');
+        continue;
+      }
+      const ol = rawLine.match(/^\\s*(\\d+)\\.\\s+(.*)$/);
+      if (ol) {
+        if (listOpen !== 'ol') {
+          closeList();
+          out.push('<ol>');
+          listOpen = 'ol';
+        }
+        out.push('<li>' + renderChatInline(ol[2]) + '</li>');
+        continue;
+      }
+      closeList();
+      if (rawLine.trim() === '') {
+        out.push('<div class="chat-p"></div>');
+      } else {
+        out.push('<p class="chat-p">' + renderChatInline(rawLine) + '</p>');
+      }
+    }
+    closeList();
+    return out.join('');
+  }
+
+  function renderChatMarkdown(text) {
+    const escaped = escHtml(text);
+    const parts = escaped.split(/\`\`\`/);
+    let html = '';
+    for (let i = 0; i < parts.length; i++) {
+      if (i % 2 === 1) {
+        // Fenced code block: drop an optional language tag on the first line.
+        const body = parts[i].replace(/^[a-zA-Z0-9_+-]+\\n/, '');
+        html += '<pre class="chat-code">' + body + '</pre>';
+      } else {
+        html += renderChatInlineBlock(parts[i]);
+      }
+    }
+    return html;
+  }
+
+  const streamingBubbles = {};
+  window.addEventListener('message', function(e) {
+    const msg = e.data;
+    if (!msg || msg.type !== 'chatChunk') return;
+    const container = document.getElementById('chatMessages');
+    if (!container) return;
+    let entry = streamingBubbles[msg.messageId];
+    if (!entry || !entry.body.isConnected) {
+      delete streamingBubbles[msg.messageId];
+      const wrap = document.createElement('div');
+      wrap.className = 'chat-msg assistant streaming';
+      wrap.innerHTML = '<div class="chat-msg-label">AI</div><div class="chat-msg-body"></div>';
+      container.appendChild(wrap);
+      entry = { body: wrap.querySelector('.chat-msg-body'), raw: '' };
+      streamingBubbles[msg.messageId] = entry;
+    }
+    // The extension sends the full accumulated text on every chunk, so the
+    // bubble stays correct even if the page was rebuilt mid-stream.
+    entry.raw = String(msg.content || '');
+    entry.body.innerHTML = renderChatMarkdown(entry.raw);
+    container.scrollTop = container.scrollHeight;
+  });
 
   document.addEventListener('keydown', function(e) {
     const target = e.target;

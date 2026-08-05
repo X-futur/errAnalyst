@@ -51,6 +51,33 @@ export class ChatSessionManager {
     this.emit();
   }
 
+  /**
+   * Starts a streaming assistant reply: pushes an empty message and returns
+   * its id so chunks can be applied in place. Does not emit until the reply
+   * is finalized, so the webview is not rebuilt on every token.
+   */
+  beginAssistantMessage(): string {
+    const message = this.makeMessage('assistant', '');
+    this.messages.push(message);
+    return message.id;
+  }
+
+  /** Updates an in-progress assistant message in place (no emit by default). */
+  updateAssistantMessage(id: string, content: string, emit = false): void {
+    const message = this.messages.find(m => m.id === id);
+    if (!message) return;
+    message.content = content;
+    if (emit) this.emit();
+  }
+
+  /** Removes an in-progress assistant message (e.g. the request failed before any token). */
+  removeAssistantMessage(id: string): void {
+    const index = this.messages.findIndex(m => m.id === id);
+    if (index === -1) return;
+    this.messages.splice(index, 1);
+    this.emit();
+  }
+
   addNotice(content: string): void {
     this.messages.push(this.makeMessage('notice', content));
     this.emit();
