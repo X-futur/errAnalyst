@@ -175,6 +175,7 @@
   "devDependencies": {
     "@types/mocha": "^10.0.0",
     "@types/node": "^20.19.43",
+    "@types/prismjs": "^1.26.6",
     "@types/vscode": "^1.96.0",
     "@vscode/test-electron": "^3.0.0",
     "eslint": "^8.50.0",
@@ -184,5 +185,8 @@
   },
   "enabledApiProposals": [
     "terminalDataWriteEvent"
-  ]
+  ],
+  "dependencies": {
+    "prismjs": "^1.30.0"
+  }
 }

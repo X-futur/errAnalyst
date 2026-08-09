@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import type { FixViewSnapshot } from '../fix/session';
 import type { FilePreview, PreviewBlock } from '../fix/preview';
+import { highlightLines, languageForFile } from '../fix/syntax';
 
 export interface FixPreviewPanelHandlers {
   onHunkAction: (action: 'accept' | 'reject', hunkId: string) => void;
@@ -194,6 +195,25 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .p-line.add{background:rgba(46,160,67,.22);color:#9cdc9c;}
 .p-line.del{background:rgba(196,43,28,.22);color:#f48771;text-decoration:line-through;}
 .p-line.ctx .p-mark{color:transparent;}
+/* Syntax highlighting — colors match VS Code's default Python theme
+   (Dark+ base values; Light+ overrides below). */
+.p-text .tok-kw{color:#569CD6;}
+.p-text .tok-ctrl{color:#C586C0;}
+.p-text .tok-string{color:#CE9178;}
+.p-text .tok-comment{color:#6A9955;}
+.p-text .tok-number{color:#B5CEA8;}
+.p-text .tok-fn{color:#DCDCAA;}
+.p-text .tok-type{color:#4EC9B0;}
+.p-text .tok-var{color:#9CDCFE;}
+.p-text .tok-const{color:#569CD6;}
+body.vscode-light .p-text .tok-kw,body.vscode-light .p-text .tok-const{color:#0000FF;}
+body.vscode-light .p-text .tok-ctrl{color:#AF00DB;}
+body.vscode-light .p-text .tok-string{color:#A31515;}
+body.vscode-light .p-text .tok-comment{color:#008000;}
+body.vscode-light .p-text .tok-number{color:#098658;}
+body.vscode-light .p-text .tok-fn{color:#795E26;}
+body.vscode-light .p-text .tok-type{color:#267F99;}
+body.vscode-light .p-text .tok-var{color:#001080;}
 </style>
 </head>
 <body>
@@ -256,6 +276,10 @@ document.addEventListener('click', function(e) {
 
   private buildBlocksHtml(snapshot: FixViewSnapshot, file: FilePreview): string {
     const byId = new Map(snapshot.hunks.map(h => [h.id, h]));
+    const lang = languageForFile(file.file);
+    const lineHtmls: string[] | null = lang
+      ? highlightLines(file.blocks.map(b => b.lines.map(l => l.text).join('\n')).join('\n'), lang)
+      : null;
     let html = '';
     for (const block of file.blocks) {
       if (block.hunkId && block.status) {
@@ -277,21 +301,24 @@ document.addEventListener('click', function(e) {
           + actions
           + openLink
           + '</div>'
-          + this.buildLinesHtml(block)
+          + this.buildLinesHtml(block, lineHtmls)
           + '</div>';
       } else {
-        html += this.buildLinesHtml(block);
+        html += this.buildLinesHtml(block, lineHtmls);
       }
     }
     return html;
   }
 
-  private buildLinesHtml(block: PreviewBlock): string {
+  private buildLinesHtml(block: PreviewBlock, lineHtmls: string[] | null): string {
     let html = '';
     for (const line of block.lines) {
       const kind = line.kind === 'removed' ? 'del' : line.kind === 'added' ? 'add' : 'ctx';
       const mark = line.kind === 'removed' ? '-' : line.kind === 'added' ? '+' : ' ';
-      html += `<div class="p-line ${kind}"><span class="p-no">${line.lineNo}</span><span class="p-mark">${mark}</span><span class="p-text">${this.esc(line.text)}</span></div>`;
+      const textHtml = lineHtmls
+        ? (lineHtmls[line.lineNo - 1] ?? this.esc(line.text))
+        : this.esc(line.text);
+      html += `<div class="p-line ${kind}"><span class="p-no">${line.lineNo}</span><span class="p-mark">${mark}</span><span class="p-text">${textHtml}</span></div>`;
     }
     return html;
   }
