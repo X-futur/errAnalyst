@@ -40,7 +40,8 @@ type TokClass =
   | 'string'
   | 'comment'
   | 'number'
-  | 'fn' // function names, builtins, decorators, magic methods — yellow
+  | 'fn' // function definition names, decorators — function color
+  | 'builtin' // builtin function calls (print, len) — builtin color
   | 'type' // class names, types, exception types — teal
   | 'var' // parameters, properties, self (parameter position) — light blue
   | 'const'; // True / False / None / null / booleans — blue
@@ -68,7 +69,7 @@ export function highlightLines(text: string, lang: SyntaxLanguage): string[] {
     const grammar = Prism.languages[lang];
     if (!grammar) return plainLines(text);
     const tokens = Prism.tokenize(text, grammar);
-    return serializeTokens(tokens, lang);
+    return serializeTokens(tokens, lang, text);
   } catch {
     return plainLines(text);
   }
@@ -136,12 +137,12 @@ function tokenClass(lang: SyntaxLanguage, token: Prism.Token): TokClass | null {
       if (PY_CONTROL.has(text)) return 'ctrl';
       if (PY_STORAGE.has(text)) return 'kw';
       if (PY_LOGICAL.has(text)) return 'kw';
-      if (PY_FUNC_BUILTINS.has(text)) return 'fn'; // Prism marks print etc. as keyword
+      if (PY_FUNC_BUILTINS.has(text)) return 'builtin'; // Prism marks print etc. as keyword
       return 'kw';
     }
     if (type === 'builtin') {
       if (PY_TYPE_BUILTINS.has(text)) return 'type';
-      return 'fn';
+      return 'builtin';
     }
     if (type === 'boolean') return 'const';
     if (type === 'function') return 'fn';
@@ -210,58 +211,108 @@ function tokenClass(lang: SyntaxLanguage, token: Prism.Token): TokClass | null {
 
 // ── serialize the structured token stream into per-line HTML ──
 
-interface LineBuffer {
-  parts: string[];
-  /** Classes of spans currently open (re-opened after every newline). */
-  open: string[];
+interface FlatSeg {
+  text: string;
+  /** Open span classes at this segment (re-opened after every newline). */
+  stack: string[];
+  /** Absolute offset of `text` inside the source passed to highlightLines. */
+  start: number;
 }
 
-function serializeTokens(tokens: Array<string | Prism.Token>, lang: SyntaxLanguage): string[] {
-  const lines: string[] = [];
-  const buf: LineBuffer = { parts: [], open: [] };
-  walk(tokens, lang, buf, lines);
-  // Flush the last line (the source text never ends with a newline here).
-  lines.push(buf.parts.join(''));
-  return lines;
+function serializeTokens(tokens: Array<string | Prism.Token>, lang: SyntaxLanguage, rawText: string): string[] {
+  const segs = flatten(tokens, lang);
+  markFunctionCalls(segs, lang, rawText);
+  return renderLines(segs);
 }
 
-function walk(
-  tokens: Array<string | Prism.Token>,
-  lang: SyntaxLanguage,
-  buf: LineBuffer,
-  lines: string[],
-): void {
-  for (const token of tokens) {
-    if (typeof token === 'string') {
-      appendText(buf, lines, token);
-      continue;
+function flatten(tokens: Array<string | Prism.Token>, lang: SyntaxLanguage): FlatSeg[] {
+  const out: FlatSeg[] = [];
+  const stack: string[] = [];
+  let offset = 0;
+  const walk = (toks: Array<string | Prism.Token>): void => {
+    for (const token of toks) {
+      if (typeof token === 'string') {
+        out.push({ text: token, stack: [...stack], start: offset });
+        offset += token.length;
+        continue;
+      }
+      const cls = tokenClass(lang, token);
+      if (cls) stack.push(cls);
+      walk(toArray(token.content));
+      if (cls) stack.pop();
     }
-    const cls = tokenClass(lang, token);
-    if (cls) {
-      buf.parts.push(`<span class="tok-${cls}">`);
-      buf.open.push(cls);
-    }
-    walk(toArray(token.content), lang, buf, lines);
-    if (cls) {
-      buf.parts.push('</span>');
-      buf.open.pop();
-    }
-  }
+  };
+  walk(tokens);
+  return out;
 }
 
 function toArray(content: string | Prism.Token | Array<string | Prism.Token>): Array<string | Prism.Token> {
   return Array.isArray(content) ? content : [content];
 }
 
-function appendText(buf: LineBuffer, lines: string[], text: string): void {
-  const segments = text.split('\n');
-  for (let i = 0; i < segments.length; i++) {
-    buf.parts.push(escHtml(segments[i]));
-    if (i < segments.length - 1) {
-      for (let j = buf.open.length - 1; j >= 0; j--) buf.parts.push('</span>');
-      lines.push(buf.parts.join(''));
-      buf.parts = [];
-      for (const cls of buf.open) buf.parts.push(`<span class="tok-${cls}">`);
+const TRAILING_IDENT_RE = /[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * VS Code's Python grammar (MagicPython) colors function calls — including
+ * imported functions like `query_db(...)` or `os.path.join(...)` — while
+ * Prism leaves call sites as plain text. This pass scans plain code regions
+ * (never strings/comments) and marks identifiers directly followed by `(` as
+ * function calls; exception-like names keep the teal type color.
+ */
+function markFunctionCalls(segs: FlatSeg[], lang: SyntaxLanguage, rawText: string): void {
+  if (lang !== 'python' && lang !== 'javascript' && lang !== 'typescript') return;
+  for (const seg of segs) {
+    if (seg.stack.length > 0) continue; // inside string / comment / other token
+    const m = TRAILING_IDENT_RE.exec(seg.text);
+    if (!m) continue;
+    const ident = m[0];
+    // Exception-like names are teal even without a call (raise / except).
+    if (lang === 'python' && PY_EXCEPTION_RE.test(ident)) {
+      seg.stack = ['type'];
+      continue;
+    }
+    const followedByParen = /^\s*\(/.test(rawText.slice(seg.start + seg.text.length));
+    if (!followedByParen) continue;
+    if (lang === 'python' && /^[A-Z]/.test(ident)) {
+      seg.stack = ['type']; // PascalCase callables are class instantiations in the editor
+    } else {
+      seg.stack = ['fn'];
     }
   }
+}
+
+/** Exception/error-like names MagicPython renders as support.type (teal). */
+const PY_EXCEPTION_RE = /(?:Error|Exception|Warning|Interrupt|Exit|Iteration)$/;
+
+function renderLines(segs: FlatSeg[]): string[] {
+  const lines: string[] = [];
+  let parts: string[] = [];
+  let openStack: string[] = [];
+
+  const flushLine = (): void => {
+    for (let j = openStack.length - 1; j >= 0; j--) parts.push('</span>');
+    lines.push(parts.join(''));
+    parts = [];
+    for (const cls of openStack) parts.push(`<span class="tok-${cls}">`);
+  };
+
+  for (const seg of segs) {
+    let common = 0;
+    while (
+      common < openStack.length
+      && common < seg.stack.length
+      && openStack[common] === seg.stack[common]
+    ) common++;
+    for (let j = openStack.length - 1; j >= common; j--) parts.push('</span>');
+    for (let j = common; j < seg.stack.length; j++) parts.push(`<span class="tok-${seg.stack[j]}">`);
+    openStack = [...seg.stack];
+
+    const textSegments = seg.text.split('\n');
+    for (let k = 0; k < textSegments.length; k++) {
+      parts.push(escHtml(textSegments[k]));
+      if (k < textSegments.length - 1) flushLine();
+    }
+  }
+  flushLine();
+  return lines;
 }

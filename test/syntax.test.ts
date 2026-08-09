@@ -57,7 +57,7 @@ suite('SyntaxHighlight', () => {
     assert.ok(lines[1].includes('class="tok-const"') && lines[1].includes('None'));
     assert.ok(lines[2].includes('class="tok-ctrl"') && lines[2].includes('raise'));
     assert.ok(lines[2].includes('class="tok-string"') && lines[2].includes('bad'));
-    assert.ok(lines[3].includes('class="tok-fn"') && lines[3].includes('print'));
+    assert.ok(lines[3].includes('class="tok-builtin"') && lines[3].includes('print'));
     assert.ok(lines[4].includes('class="tok-const"') && lines[4].includes('True'));
     assert.ok(lines[5].includes('class="tok-kw"') && lines[5].includes('class'));
     assert.ok(lines[5].includes('class="tok-type"') && lines[5].includes('MyService'));
@@ -97,5 +97,45 @@ suite('SyntaxHighlight', () => {
     assert.ok(json.includes('class="tok-var"'));
     assert.ok(json.includes('class="tok-const"'));
     assert.ok(json.includes('class="tok-number"'));
+  });
+
+  test('highlights imported function calls', () => {
+    const code = [
+      'result = query_db(user_id)',
+      'path = os.path.join("a", "b")',
+      'logging.error("failed")',
+      'obj.method()',
+    ].join('\n');
+    const lines = highlightLines(code, 'python');
+    assert.ok(lines[0].includes('class="tok-fn"') && lines[0].includes('query_db'));
+    assert.ok(lines[1].includes('class="tok-fn"') && lines[1].includes('join'));
+    assert.ok(lines[2].includes('class="tok-fn"') && lines[2].includes('error'));
+    assert.ok(lines[3].includes('class="tok-fn"') && lines[3].includes('method'));
+  });
+
+  test('colors exception names and class instantiations as types', () => {
+    const code = [
+      'raise ValueError("bad") from None',
+      'except (TypeError, KeyError) as exc:',
+      'svc = MyService("demo")',
+    ].join('\n');
+    const lines = highlightLines(code, 'python');
+    assert.ok(lines[0].includes('class="tok-type"') && lines[0].includes('ValueError'));
+    assert.ok(lines[1].includes('class="tok-type"') && lines[1].includes('TypeError'));
+    assert.ok(lines[1].includes('class="tok-type"') && lines[1].includes('KeyError'));
+    assert.ok(lines[2].includes('class="tok-type"') && lines[2].includes('MyService'));
+  });
+
+  test('does not highlight calls inside strings or comments', () => {
+    const code = [
+      's = "query_db(x) not a call"',
+      '# comment with foo(1) inside',
+    ].join('\n');
+    const lines = highlightLines(code, 'python');
+    // The string line must not contain a tok-fn span around query_db.
+    assert.ok(!/tok-fn[^>]*>.*query_db/.test(lines[0]));
+    assert.ok(!lines[1].includes('tok-fn'));
+    assert.ok(lines[0].includes('tok-string'));
+    assert.ok(lines[1].includes('tok-comment'));
   });
 });

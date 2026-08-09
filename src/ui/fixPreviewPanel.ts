@@ -18,6 +18,7 @@ type PanelMode = 'loading' | 'error' | 'session';
 export class FixPreviewPanel {
   private panel: vscode.WebviewPanel | null = null;
   private disposables: vscode.Disposable[] = [];
+  private readonly lifecycle: vscode.Disposable[];
   private mode: PanelMode = 'loading';
   private error = '';
   private snapshot: FixViewSnapshot | null = null;
@@ -26,7 +27,18 @@ export class FixPreviewPanel {
   private userClosed = false;
   private closingByUs = false;
 
-  constructor(private readonly handlers: FixPreviewPanelHandlers) {}
+  constructor(private readonly handlers: FixPreviewPanelHandlers) {
+    // Re-render when the active color theme changes so the syntax palette
+    // keeps matching the editor.
+    this.lifecycle = [
+      vscode.window.onDidChangeActiveColorTheme(() => {
+        if (this.panel) this.render();
+      }),
+      vscode.workspace.onDidChangeConfiguration(e => {
+        if (e.affectsConfiguration('workbench.colorTheme') && this.panel) this.render();
+      }),
+    ];
+  }
 
   showGenerating(): void {
     this.mode = 'loading';
@@ -73,6 +85,7 @@ export class FixPreviewPanel {
   }
 
   dispose(): void {
+    this.lifecycle.forEach(d => d.dispose());
     this.close();
   }
 
@@ -195,28 +208,27 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .p-line.add{background:rgba(46,160,67,.22);color:#9cdc9c;}
 .p-line.del{background:rgba(196,43,28,.22);color:#f48771;text-decoration:line-through;}
 .p-line.ctx .p-mark{color:transparent;}
-/* Syntax highlighting — colors match VS Code's default Python theme
-   (Dark+ base values; Light+ overrides below). */
-.p-text .tok-kw{color:#569CD6;}
-.p-text .tok-ctrl{color:#C586C0;}
-.p-text .tok-string{color:#CE9178;}
-.p-text .tok-comment{color:#6A9955;}
-.p-text .tok-number{color:#B5CEA8;}
-.p-text .tok-fn{color:#DCDCAA;}
-.p-text .tok-type{color:#4EC9B0;}
-.p-text .tok-var{color:#9CDCFE;}
-.p-text .tok-const{color:#569CD6;}
-body.vscode-light .p-text .tok-kw,body.vscode-light .p-text .tok-const{color:#0000FF;}
-body.vscode-light .p-text .tok-ctrl{color:#AF00DB;}
-body.vscode-light .p-text .tok-string{color:#A31515;}
-body.vscode-light .p-text .tok-comment{color:#008000;}
-body.vscode-light .p-text .tok-number{color:#098658;}
-body.vscode-light .p-text .tok-fn{color:#795E26;}
-body.vscode-light .p-text .tok-type{color:#267F99;}
-body.vscode-light .p-text .tok-var{color:#001080;}
+/* Syntax highlighting — palette follows the active VS Code theme. The
+   panel writes data-theme="dark2026|light2026|darkplus|lightplus" on the
+   body based on the configured workbench theme; the 2026 palettes are this
+   build's defaults and also the fallback when no theme is configured. */
+:root{--tok-kw:#ff7b72;--tok-ctrl:#C586C0;--tok-string:#a5d6ff;--tok-comment:#8b949e;--tok-number:#b5cea8;--tok-fn:#d2a8ff;--tok-builtin:#DCDCAA;--tok-type:#4EC9B0;--tok-var:#79c0ff;--tok-const:#569cd6;}
+body[data-theme="light2026"]{--tok-kw:#cf222e;--tok-ctrl:#AF00DB;--tok-string:#0a3069;--tok-comment:#6e7781;--tok-number:#098658;--tok-fn:#8250df;--tok-builtin:#795E26;--tok-type:#267f99;--tok-var:#0550ae;--tok-const:#0000ff;}
+body[data-theme="darkplus"]{--tok-kw:#569CD6;--tok-ctrl:#C586C0;--tok-string:#CE9178;--tok-comment:#6A9955;--tok-number:#B5CEA8;--tok-fn:#DCDCAA;--tok-builtin:#DCDCAA;--tok-type:#4EC9B0;--tok-var:#9CDCFE;--tok-const:#569CD6;}
+body[data-theme="lightplus"]{--tok-kw:#0000FF;--tok-ctrl:#AF00DB;--tok-string:#A31515;--tok-comment:#008000;--tok-number:#098658;--tok-fn:#795E26;--tok-builtin:#795E26;--tok-type:#267F99;--tok-var:#001080;--tok-const:#0000FF;}
+.p-text .tok-kw{color:var(--tok-kw);}
+.p-text .tok-ctrl{color:var(--tok-ctrl);}
+.p-text .tok-string{color:var(--tok-string);}
+.p-text .tok-comment{color:var(--tok-comment);}
+.p-text .tok-number{color:var(--tok-number);}
+.p-text .tok-fn{color:var(--tok-fn);}
+.p-text .tok-builtin{color:var(--tok-builtin);}
+.p-text .tok-type{color:var(--tok-type);}
+.p-text .tok-var{color:var(--tok-var);}
+.p-text .tok-const{color:var(--tok-const);}
 </style>
 </head>
-<body>
+<body data-theme="${this.currentThemePalette()}">
 ${body}
 <script>
 const vscode = acquireVsCodeApi();
@@ -308,6 +320,23 @@ document.addEventListener('click', function(e) {
       }
     }
     return html;
+  }
+
+  /** Palette id matching the theme the user's editor actually shows. */
+  private currentThemePalette(): string {
+    const configured = vscode.workspace.getConfiguration('workbench').get<string>('colorTheme');
+    if (configured === 'Dark+' || configured === 'Dark Modern'
+      || configured === 'Default Dark Modern' || configured === 'Default Dark+') {
+      return 'darkplus';
+    }
+    if (configured === 'Light+' || configured === 'Light Modern'
+      || configured === 'Default Light Modern' || configured === 'Default Light+') {
+      return 'lightplus';
+    }
+    const kind = vscode.window.activeColorTheme.kind;
+    return kind === vscode.ColorThemeKind.Light || kind === vscode.ColorThemeKind.HighContrastLight
+      ? 'light2026'
+      : 'dark2026';
   }
 
   private buildLinesHtml(block: PreviewBlock, lineHtmls: string[] | null): string {
