@@ -279,7 +279,7 @@ function buildUserPrompt(traceback, category, context) {
     // ═══ Part 3: 源代码上下文（contextBuilder 按优先级挑选的） ═══
     lines.push('## Source Context');
     lines.push('');
-    const hasContext = (context?.mainFile || context?.stackFiles?.length || context?.configFiles?.length || context?.siblingFiles?.length);
+    const hasContext = (context?.mainFile || context?.stackFiles?.length || context?.configFiles?.length || context?.siblingFiles?.length || context?.guessedFiles?.length);
     if (hasContext) {
         if (context.mainFile) {
             lines.push('### ' + context.mainFile.path + ':' + context.mainFile.startLine + '-' + context.mainFile.endLine + ' (error location, P0)');
@@ -290,6 +290,13 @@ function buildUserPrompt(traceback, category, context) {
         }
         for (const f of (context.stackFiles || []).slice(0, 5)) {
             lines.push('### ' + f.path + ':' + f.startLine + '-' + f.endLine + ' (stack frame)');
+            lines.push('```');
+            lines.push(f.content);
+            lines.push('```');
+            lines.push('');
+        }
+        for (const f of (context.guessedFiles || []).slice(0, 3)) {
+            lines.push('### ' + f.path + ':' + f.startLine + '-' + f.endLine + ' (guessed, 未在调用栈中确认)');
             lines.push('```');
             lines.push(f.content);
             lines.push('```');

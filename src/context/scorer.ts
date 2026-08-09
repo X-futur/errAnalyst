@@ -10,13 +10,14 @@
    source: CandidateSource;
  }
  
- export type CandidateSource =
-   | 'primary_last_frame'    // primary 栈帧最后一帧
-   | 'primary_other_frame'   // primary 栈帧其他帧
-   | 'chain_root_frame'      // chain 根因的栈帧
-   | 'chain_mid_frame'       // chain 中间层的栈帧
-   | 'config_file'           // 配置文件
-   | 'sibling_file';         // 同级文件
+export type CandidateSource =
+  | 'primary_last_frame'    // primary 栈帧最后一帧
+  | 'primary_other_frame'   // primary 栈帧其他帧
+  | 'chain_root_frame'      // chain 根因的栈帧
+  | 'chain_mid_frame'       // chain 中间层的栈帧
+  | 'config_file'           // 配置文件
+  | 'sibling_file'          // 同级文件
+  | 'guessed_file';         // 猜测的候选文件（栈内无项目文件时）
  
  // ── Default scoring parameters ──
  
@@ -30,11 +31,14 @@
    chainMidFramePriority: number;
    chainMidFrameLines: number;
    configFilePriority: number;
-   configFileLines: number;
-   siblingFilePriority: number;
-   siblingFileLines: number;
-   maxTotalChars: number;
- }
+  configFileLines: number;
+  siblingFilePriority: number;
+  siblingFileLines: number;
+  guessedFilePriority: number;
+  guessedFileLines: number;
+  guessedFileMax: number;
+  maxTotalChars: number;
+}
  
  export const DEFAULT_SCORING_PARAMS: ScoringParams = {
    primaryLastFramePriority: 100,
@@ -46,11 +50,14 @@
    chainMidFramePriority: 60,
    chainMidFrameLines: 20,
    configFilePriority: 40,
-   configFileLines: 30,
-   siblingFilePriority: 20,
-   siblingFileLines: 20,
-   maxTotalChars: 7000,
- };
+  configFileLines: 30,
+  siblingFilePriority: 20,
+  siblingFileLines: 20,
+  guessedFilePriority: 30,
+  guessedFileLines: 40,
+  guessedFileMax: 3,
+  maxTotalChars: 7000,
+};
  
  // ── Scoring functions ──
  

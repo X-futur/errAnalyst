@@ -303,7 +303,8 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
     const hasFiles = ctx.mainFile
       || ctx.stackFiles.length > 0
       || ctx.configFiles.length > 0
-      || ctx.siblingFiles.length > 0;
+      || ctx.siblingFiles.length > 0
+      || ctx.guessedFiles.length > 0;
     if (!hasFiles) {
       return '<div class="context-empty">未找到可重建的代码上下文，文件可能已变化</div>';
     }
@@ -315,6 +316,9 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
     for (const f of ctx.stackFiles) {
       html += this.renderFileContext(f, false);
     }
+    for (const f of ctx.guessedFiles) {
+      html += this.renderFileContext(f, false, '猜测');
+    }
     for (const f of ctx.configFiles) {
       html += this.renderFileContext(f, false);
     }
@@ -324,8 +328,10 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
     return html;
   }
 
-  private renderFileContext(fc: FileContext, isMain: boolean): string {
-    const label = isMain ? '主要报错文件' : (fc.path.split('/').pop() || fc.path);
+  private renderFileContext(fc: FileContext, isMain: boolean, tag?: string): string {
+    const label = isMain
+      ? '主要报错文件'
+      : (tag || fc.path.split('/').pop() || fc.path);
     const relPath = fc.path;
     return `<div class="file-context ${isMain ? 'main-file' : ''}">
       <div class="file-row" onclick="toggleFile(this)">

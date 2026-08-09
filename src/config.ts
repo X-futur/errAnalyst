@@ -82,7 +82,7 @@ export class Config {
               return { ...p, apiKey: creds[p.name] };
             }
           }
-        } catch {}
+        } catch { }
       }
     }
     return undefined;
@@ -144,7 +144,7 @@ export class Config {
 
   getAiTimeout(): number {
     return vscode.workspace.getConfiguration('errAnalyst')
-      .get<number>('aiTimeout', 15000);
+      .get<number>('aiTimeout', 50000);
   }
 
   getEnableOneClickFix(): boolean {

@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { ChatAutoFileInput, ChatContextFileView } from './types';
+import { isConfigLikePath, sanitizeConfigText } from '../context/sanitize';
 
 export const MAX_FILE_CHARS = 7000;
 export const MAX_TOTAL_CHARS = 16000;
@@ -147,6 +148,8 @@ export class ChatContextManager {
         states.push(state);
         continue;
       }
+      // Config files are sent to the LLM with sensitive values redacted.
+      content = isConfigLikePath(entry.path) ? sanitizeConfigText(content, entry.path) : content;
       if (entry.source === 'auto' && entry.snapshotContent !== undefined && content !== entry.snapshotContent) {
         state.changed = true;
       }

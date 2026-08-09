@@ -10,7 +10,7 @@ interface ExistingConfig {
   providers: Array<{ name: string; baseUrl: string; model: string; apiKey?: string }>;
   autoAnalyze: boolean;
   apiKey?: string;
-		enableCache: boolean;
+  enableCache: boolean;
 }
 
 export class ConfigWizard {
@@ -100,7 +100,7 @@ export class ConfigWizard {
     provider: { name: string; baseUrl: string; model: string };
     apiKey: string;
     autoAnalyze: boolean;
-		enableCache: boolean;
+    enableCache: boolean;
   }): Promise<void> {
     try {
       await Config.getInstance().saveProviderConfig(data.provider, data.apiKey, {
@@ -375,7 +375,7 @@ h2{font-size:16px;margin-bottom:16px;color:var(--text-bright)}
     existingProviderName: null, existingApiKey: '',
   };
   const PRESETS = [
-    { name: 'DeepSeek',        baseUrl: 'https://api.deepseek.com/v1',                        model: 'deepseek-v4-pro', icon: '\\ud83d\\udd35', desc: '\\u6027\\u4ef7\\u6bd4\\u9ad8\\u7684\\u901a\\u7528\\u6a21\\u578b' },
+    { name: 'DeepSeek',        baseUrl: 'https://api.deepseek.com',                        model: 'deepseek-v4-flash', icon: '\\ud83d\\udd35', desc: '\\u6027\\u4ef7\\u6bd4\\u9ad8\\u7684\\u901a\\u7528\\u6a21\\u578b' },
     { name: 'Kimi (Moonshot)', baseUrl: 'https://api.moonshot.cn/v1',                         model: 'moonshot-v1-8k',  icon: '\\ud83d\\udd34', desc: '\\u957f\\u4e0a\\u4e0b\\u6587\\u63a8\\u7406\\u80fd\\u529b\\u5f3a' },
     { name: 'Qwen (\\u901a\\u4e49\\u5343\\u95ee)', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-turbo', icon: '\\ud83d\\udfe0', desc: '\\u963f\\u91cc\\u4e91\\u901a\\u4e49\\u5343\\u95ee\\u5927\\u6a21\\u578b' },
     { name: '\\u81ea\\u5b9a\\u4e49', baseUrl: '', model: '', icon: '\\u2699\\ufe0f', desc: '\\u63a5\\u5165\\u4efb\\u610f OpenAI \\u517c\\u5bb9 API' },

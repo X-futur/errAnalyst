@@ -53,7 +53,7 @@ function keychainGet(account) {
 function keychainSet(account, password) {
   try {
     execSync(`security delete-generic-password -a "${account}" -s "${KEYCHAIN_SERVICE}" 2>/dev/null`, { timeout: 3000 });
-  } catch {}
+  } catch { }
   execSync(
     `security add-generic-password -a "${account}" -s "${KEYCHAIN_SERVICE}" -w "${password}" -U 2>/dev/null`,
     { timeout: 3000 }
@@ -63,15 +63,15 @@ function keychainSet(account, password) {
 function keychainDelete(account) {
   try {
     execSync(`security delete-generic-password -a "${account}" -s "${KEYCHAIN_SERVICE}" 2>/dev/null`, { timeout: 3000 });
-  } catch {}
+  } catch { }
 }
 
 // ── Preset providers ──
 
 const PRESETS = {
-  'DeepSeek':       { baseUrl: 'https://api.deepseek.com/v1',                         model: 'deepseek-v4-pro' },
-  'Kimi (Moonshot)':{ baseUrl: 'https://api.moonshot.cn/v1',                          model: 'moonshot-v1-8k'  },
-  'Qwen (通义千问)': { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',   model: 'qwen-turbo'      },
+  'DeepSeek': { baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash' },
+  'Kimi (Moonshot)': { baseUrl: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-8k' },
+  'Qwen (通义千问)': { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-turbo' },
 };
 
 // ── Helpers ──
@@ -92,7 +92,7 @@ function getApiKey(providerOrKey) {
     try {
       const creds = JSON.parse(fs.readFileSync(CREDENTIALS_FILE, "utf-8"));
       if (creds[providerName]) return creds[providerName];
-    } catch {}
+    } catch { }
   }
   return keychainGet(API_KEY_PREFIX + providerName);
 }
@@ -211,7 +211,7 @@ async function cmdProviderSet() {
     }
     creds[name] = finalKey;
     require("fs").writeFileSync(CREDENTIALS_FILE, JSON.stringify(creds, null, 2));
-  } catch {}
+  } catch { }
 
   console.log(`\n✓ Provider "${name}" configured (model: ${model})`);
   readline.close();

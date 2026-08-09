@@ -42,6 +42,7 @@ const config_1 = require("./config");
 const pythonTraceback_1 = require("./parser/pythonTraceback");
 const categoryClassifier_1 = require("./diagnostics/categoryClassifier");
 const contextBuilder_1 = require("./context/contextBuilder");
+const projectFiles_1 = require("./context/projectFiles");
 const errorMemory_1 = require("./storage/errorMemory");
 const terminalWatcher_1 = require("./terminalWatcher");
 const analysisWebview_1 = require("./ui/analysisWebview");
@@ -285,7 +286,7 @@ function registerManifestCommands(context) {
                 stackFrames: result.stackFrames,
                 fullTraceback: result.fullTraceback,
                 chain: result.chain,
-            }, workspaceFolders);
+            }, workspaceFolders, currentActiveFile());
             analysisViewProvider.show(result, {
                 translation: entry.translation,
                 keywords: entry.keywords || [],
@@ -588,6 +589,7 @@ function contextToAutoFiles(context) {
         ...context.stackFiles,
         ...context.configFiles,
         ...context.siblingFiles,
+        ...context.guessedFiles,
     ].filter((f) => !!f);
     return files.map(f => ({
         path: f.path,
@@ -595,6 +597,9 @@ function contextToAutoFiles(context) {
         endLine: f.endLine,
         content: f.content,
     }));
+}
+function currentActiveFile() {
+    return vscode.window.activeTextEditor?.document.uri.fsPath;
 }
 async function runFixFlow() {
     const config = config_1.Config.getInstance();
@@ -627,7 +632,7 @@ async function runFixFlow() {
             fullTraceback: lastError.fullTraceback || '',
             chain: lastError.chain || [],
         };
-        const context = contextBuilder.build(parsedTraceback, workspaceFolders);
+        const context = contextBuilder.build(parsedTraceback, workspaceFolders, currentActiveFile());
         const analysisText = [
             lastError.translation ? '翻译：' + lastError.translation : '',
             lastError.analysis ? '分析：' + lastError.analysis : '',
@@ -672,11 +677,18 @@ function collectAllowedFiles(context, traceback) {
     const files = new Set();
     if (context.mainFile)
         files.add(context.mainFile.path);
-    for (const f of [...context.stackFiles, ...context.configFiles, ...context.siblingFiles]) {
+    for (const f of [
+        ...context.stackFiles,
+        ...context.configFiles,
+        ...context.siblingFiles,
+        ...context.guessedFiles,
+    ]) {
         files.add(f.path);
     }
-    if (traceback.filePath)
+    // The error file itself is a fix target only when it is a project file.
+    if (traceback.filePath && (0, projectFiles_1.isProjectFile)(traceback.filePath, context.anchors || [])) {
         files.add(traceback.filePath);
+    }
     return [...files];
 }
 // 自动分析主流程
@@ -697,7 +709,7 @@ async function autoAnalyze(result, category, options) {
         fullTraceback: result.fullTraceback || '',
         chain: result.chain || [],
     };
-    const context = contextBuilder.build(parsedTraceback, workspaceFolders);
+    const context = contextBuilder.build(parsedTraceback, workspaceFolders, currentActiveFile());
     analysisViewProvider.showContext(result.fullTraceback, context);
     chatSessionManager.updateAutoFiles(contextToAutoFiles(context));
     // ── Build AI context ──

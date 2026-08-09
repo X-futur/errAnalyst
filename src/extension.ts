@@ -5,6 +5,7 @@ import { Config } from './config';
 import { PythonTracebackParser } from './parser/pythonTraceback';
 import { CategoryClassifier } from './diagnostics/categoryClassifier';
 import { ContextBuilder } from './context/contextBuilder';
+import { isProjectFile } from './context/projectFiles';
 import { ErrorMemory } from './storage/errorMemory';
 import { TerminalWatcher } from './terminalWatcher';
 import { AnalysisViewProvider, type ChatWebviewAction, type FixWebviewAction } from './ui/analysisWebview';
@@ -289,7 +290,7 @@ function registerManifestCommands(context: vscode.ExtensionContext): void {
         stackFrames: result.stackFrames,
         fullTraceback: result.fullTraceback,
         chain: result.chain,
-      }, workspaceFolders);
+      }, workspaceFolders, currentActiveFile());
 
       analysisViewProvider.show(result, {
         translation: entry.translation,
@@ -591,6 +592,7 @@ function contextToAutoFiles(context: BuiltContext): ChatAutoFileInput[] {
     ...context.stackFiles,
     ...context.configFiles,
     ...context.siblingFiles,
+    ...context.guessedFiles,
   ].filter((f): f is FileContext => !!f);
   return files.map(f => ({
     path: f.path,
@@ -598,6 +600,10 @@ function contextToAutoFiles(context: BuiltContext): ChatAutoFileInput[] {
     endLine: f.endLine,
     content: f.content,
   }));
+}
+
+function currentActiveFile(): string | undefined {
+  return vscode.window.activeTextEditor?.document.uri.fsPath;
 }
 
 async function runFixFlow(): Promise<void> {
@@ -632,7 +638,7 @@ async function runFixFlow(): Promise<void> {
       fullTraceback: lastError.fullTraceback || '',
       chain: lastError.chain || [],
     };
-    const context = contextBuilder.build(parsedTraceback, workspaceFolders);
+    const context = contextBuilder.build(parsedTraceback, workspaceFolders, currentActiveFile());
     const analysisText = [
       lastError.translation ? '翻译：' + lastError.translation : '',
       lastError.analysis ? '分析：' + lastError.analysis : '',
@@ -684,10 +690,18 @@ async function generateFixHunks(
 function collectAllowedFiles(context: BuiltContext, traceback: ParsedTraceback): string[] {
   const files = new Set<string>();
   if (context.mainFile) files.add(context.mainFile.path);
-  for (const f of [...context.stackFiles, ...context.configFiles, ...context.siblingFiles]) {
+  for (const f of [
+    ...context.stackFiles,
+    ...context.configFiles,
+    ...context.siblingFiles,
+    ...context.guessedFiles,
+  ]) {
     files.add(f.path);
   }
-  if (traceback.filePath) files.add(traceback.filePath);
+  // The error file itself is a fix target only when it is a project file.
+  if (traceback.filePath && isProjectFile(traceback.filePath, context.anchors || [])) {
+    files.add(traceback.filePath);
+  }
   return [...files];
 }
 
@@ -716,7 +730,7 @@ async function autoAnalyze(
     chain: result.chain || [],
   };
 
-  const context = contextBuilder.build(parsedTraceback, workspaceFolders);
+  const context = contextBuilder.build(parsedTraceback, workspaceFolders, currentActiveFile());
   analysisViewProvider.showContext(result.fullTraceback, context);
   chatSessionManager.updateAutoFiles(contextToAutoFiles(context));
 

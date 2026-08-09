@@ -216,6 +216,7 @@ function serializeSourceContext(context?: BuiltContext): string {
 
   if (context.mainFile) pushFile(context.mainFile, 'error location, P0');
   for (const f of (context.stackFiles || []).slice(0, 5)) pushFile(f, 'stack frame');
+  for (const f of (context.guessedFiles || []).slice(0, 3)) pushFile(f, 'guessed（猜测，未在调用栈中确认）');
   for (const f of (context.configFiles || []).slice(0, 2)) pushFile(f, 'config');
   for (const f of (context.siblingFiles || []).slice(0, 1)) pushFile(f, 'sibling');
   return parts.join('\n');

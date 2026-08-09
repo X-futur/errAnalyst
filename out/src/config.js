@@ -129,7 +129,7 @@ class Config {
     }
     getAiTimeout() {
         return vscode.workspace.getConfiguration('errAnalyst')
-            .get('aiTimeout', 15000);
+            .get('aiTimeout', 50000);
     }
     getEnableOneClickFix() {
         return vscode.workspace.getConfiguration('errAnalyst')
