@@ -138,6 +138,11 @@ function activate(context) {
                 fixPreviewPanel.close();
             }
         },
+        onAllConfirmed: () => {
+            // 所有修改处均已确认（接受或拒绝），自动执行结束修复。
+            if (fixSessionManager.active)
+                void finishFixSession();
+        },
     });
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, fixDecorationManager), vscode.commands.registerCommand('errAnalyst.acceptFixHunk', (id) => void fixSessionManager.accept(id)), vscode.commands.registerCommand('errAnalyst.rejectFixHunk', (id) => void fixSessionManager.reject(id)), vscode.workspace.onDidChangeTextDocument(() => {
         if (fixSessionManager?.active)

@@ -122,6 +122,10 @@ export function activate(context: vscode.ExtensionContext) {
         fixPreviewPanel.close();
       }
     },
+    onAllConfirmed: () => {
+      // 所有修改处均已确认（接受或拒绝），自动执行结束修复。
+      if (fixSessionManager.active) void finishFixSession();
+    },
   });
   context.subscriptions.push(
     vscode.languages.registerCodeLensProvider({ scheme: 'file' }, fixDecorationManager),

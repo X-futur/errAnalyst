@@ -37,6 +37,9 @@ export interface FinishResult {
 export interface FixSessionManagerDeps {
   decorations: FixDecorationManager;
   onStateChanged: (snapshot: FixViewSnapshot | null) => void;
+  /** Invoked when every hunk has been decided (no pending left), letting the
+   *  caller run the end-of-fix logic automatically. */
+  onAllConfirmed?: () => void;
 }
 
 /**
@@ -148,6 +151,7 @@ export class FixSessionManager {
     if (!hunk || hunk.status !== 'pending') return;
     hunk.status = 'accepted';
     await this.refresh();
+    this.maybeAutoFinish();
   }
 
   async reject(hunkId: string): Promise<void> {
@@ -155,6 +159,7 @@ export class FixSessionManager {
     if (!hunk || hunk.status !== 'pending') return;
     hunk.status = 'rejected';
     await this.refresh();
+    this.maybeAutoFinish();
   }
 
   async acceptAll(): Promise<void> {
@@ -164,6 +169,7 @@ export class FixSessionManager {
       if (hunk.status === 'pending') hunk.status = 'accepted';
     }
     await this.refresh();
+    this.maybeAutoFinish();
   }
 
   async rejectAll(): Promise<void> {
@@ -173,6 +179,7 @@ export class FixSessionManager {
       if (hunk.status === 'pending') hunk.status = 'rejected';
     }
     await this.refresh();
+    this.maybeAutoFinish();
   }
 
   async undoAll(): Promise<void> {
@@ -190,6 +197,9 @@ export class FixSessionManager {
    * hunks are not written (the user is warned first).
    */
   async finish(): Promise<FinishResult> {
+    if (this.finishing) {
+      return { written: [], skipped: [], failed: [], cancelled: true };
+    }
     const session = this.session;
     if (!session) return { written: [], skipped: [], failed: [], cancelled: false };
 
@@ -290,6 +300,20 @@ export class FixSessionManager {
 
   private markAllStale(hunks: FixHunk[]): void {
     for (const h of hunks) h.status = 'stale';
+  }
+
+  /**
+   * Once every hunk has been decided (accepted or rejected; stale hunks can no
+   * longer be decided and count as terminal), end the fix automatically.
+   * Only user decisions trigger this — a session that goes fully stale from
+   * external edits stays open for a manual "结束修复".
+   */
+  private maybeAutoFinish(): void {
+    const session = this.session;
+    if (!session || this.finishing) return;
+    if (session.hunks.every(h => h.status !== 'pending')) {
+      this.deps.onAllConfirmed?.();
+    }
   }
 
   private buildSnapshot(session: FixSession): FixViewSnapshot {
