@@ -71,6 +71,7 @@ export function isProjectFile(filePath: string, anchors: string[]): boolean {
 export function computeAnchors(
   workspaceFolders: string[],
   primaryFile?: string,
+  runningFile?: string,
 ): string[] {
   const anchors: string[] = [];
   const seen = new Set<string>();
@@ -84,8 +85,9 @@ export function computeAnchors(
 
   for (const w of workspaceFolders) add(w);
 
-  if (primaryFile) {
-    const f = normalizePath(primaryFile);
+  for (const candidate of [primaryFile, runningFile]) {
+    if (!candidate) continue;
+    const f = normalizePath(candidate);
     const inWorkspace = workspaceFolders.some(w => isInside(f, w));
     if (!inWorkspace && !isDependencyPath(f)) add(path.dirname(f));
   }

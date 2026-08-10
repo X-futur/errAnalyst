@@ -1,7 +1,11 @@
 import * as vscode from 'vscode';
 import { Config, ErrorAnalysisResult } from '../config';
 import { resolveCoreTerm } from '../errorTerms';
-import type { BuiltContext, FileContext } from '../context/contextBuilder';
+import {
+  RUNNING_FILE_SOFT_LIMIT,
+  type BuiltContext,
+  type FileContext,
+} from '../context/contextBuilder';
 import type { FixViewSnapshot } from '../fix/session';
 import type { ChatViewSnapshot } from '../chat/types';
 
@@ -301,6 +305,7 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
     if (!ctx) return '';
 
     const hasFiles = ctx.mainFile
+      || ctx.runningFile
       || ctx.stackFiles.length > 0
       || ctx.configFiles.length > 0
       || ctx.siblingFiles.length > 0
@@ -310,6 +315,15 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
     }
 
     let html = '';
+    if (ctx.runningFile) {
+      const isErrorFile = ctx.runningFile.path === this.currentError?.filePath;
+      const tag = isErrorFile ? '运行文件（完整，主要报错文件）' : '运行文件（完整）';
+      html += this.renderFileContext(ctx.runningFile, false, tag);
+      if (ctx.runningFile.content.length > RUNNING_FILE_SOFT_LIMIT) {
+        html += '<div class="context-empty">⚠ 运行文件超过 ' + RUNNING_FILE_SOFT_LIMIT +
+          ' 字符，可能影响分析质量（未截断）</div>';
+      }
+    }
     if (ctx.mainFile) {
       html += this.renderFileContext(ctx.mainFile, true);
     }

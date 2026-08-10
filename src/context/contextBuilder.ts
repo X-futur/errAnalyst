@@ -26,6 +26,8 @@ export interface FileContext {
 }
 
 export interface BuiltContext {
+  /** 运行文件（用户实际运行的入口脚本），全量捕获、豁免字符预算。 */
+  runningFile?: FileContext;
   mainFile?: FileContext;
   stackFiles: FileContext[];
   configFiles: FileContext[];
@@ -58,6 +60,9 @@ const MAX_SCAN_FILES = 4000;
 const MAX_SCAN_DEPTH = 8;
 const MAX_SIBLING_CANDIDATES = 20;
 
+/** 运行文件超过该长度时仅做软提示（UI/日志标注），不截断。 */
+export const RUNNING_FILE_SOFT_LIMIT = 50_000;
+
 // ── ContextBuilder ──
 
 export class ContextBuilder {
@@ -79,7 +84,13 @@ export class ContextBuilder {
     workspaceFolders: string[],
     activeFile?: string,
   ): BuiltContext {
-    const anchors = computeAnchors(workspaceFolders, traceback.filePath);
+    const baseAnchors = computeAnchors(workspaceFolders, traceback.filePath);
+    const runningPathGuess = this.guessRunningPath(traceback, baseAnchors);
+    const anchors = computeAnchors(
+      workspaceFolders,
+      traceback.filePath,
+      runningPathGuess,
+    );
     const ctx: BuiltContext = {
       stackFiles: [],
       configFiles: [],
@@ -88,6 +99,9 @@ export class ContextBuilder {
       workspaceRoot: workspaceFolders[0],
       anchors,
     };
+
+    // ── Step 0: running file (entry script) — full content, budget-exempt ──
+    ctx.runningFile = this.tryMaterializeRunning(traceback, baseAnchors, anchors);
 
     // ── Step 1: stack-frame candidates, project-only ──
     const allFrames = collectCandidates(traceback, this.params);
@@ -117,9 +131,15 @@ export class ContextBuilder {
 
     // ── Step 5: greedy selection within char budget ──
     const deduped = this.dedupeCandidates(candidates);
-    const sorted = sortCandidates(deduped);
+    const sorted = sortCandidates(deduped).filter(
+      c => !ctx.runningFile ||
+        path.normalize(c.filePath) !== path.normalize(ctx.runningFile.path),
+    );
     let totalChars = 0;
-    const maxChars = this.params.maxTotalChars;
+    let maxChars = this.params.maxTotalChars;
+    if (ctx.runningFile) {
+      maxChars = Math.max(0, maxChars - ctx.runningFile.content.length);
+    }
     const selected: Array<{ candidate: FileCandidate; content: string }> = [];
 
     for (const cand of sorted) {
@@ -168,6 +188,138 @@ export class ContextBuilder {
     }
 
     return ctx;
+  }
+
+  // ── Running file (entry script) ──
+
+  /** Best guess of the entry script path, for anchor computation. */
+  private guessRunningPath(
+    traceback: ParsedTraceback,
+    baseAnchors: string[],
+  ): string | undefined {
+    if (traceback.commandLine) {
+      const fromCommand = this.parseCommandLineFile(traceback.commandLine, baseAnchors);
+      if (fromCommand) return fromCommand;
+    }
+    return traceback.stackFrames[0]?.file;
+  }
+
+  /**
+   * Materialize the running file in full. Tries the terminal command line
+   * first, then the primary traceback's first frame. Only project files
+   * qualify; dependency/system paths are excluded.
+   */
+  private tryMaterializeRunning(
+    traceback: ParsedTraceback,
+    baseAnchors: string[],
+    anchors: string[],
+  ): FileContext | undefined {
+    if (traceback.commandLine) {
+      const fromCommand = this.parseCommandLineFile(traceback.commandLine, baseAnchors);
+      const fc = fromCommand ? this.materializeRunningFile(fromCommand, anchors) : undefined;
+      if (fc) return fc;
+    }
+    const firstFrame = traceback.stackFrames[0];
+    if (!firstFrame) return undefined;
+    return this.materializeRunningFile(firstFrame.file, anchors);
+  }
+
+  private materializeRunningFile(
+    filePath: string,
+    anchors: string[],
+  ): FileContext | undefined {
+    if (!isProjectFile(filePath, anchors)) return undefined;
+    const full = this.readFileFull(filePath);
+    if (!full) return undefined;
+    return {
+      path: path.normalize(filePath),
+      source: 'running_file',
+      startLine: full.startLine,
+      endLine: full.endLine,
+      content: full.content,
+    };
+  }
+
+  /**
+   * Extract the script path from a shell command line, e.g.
+   * `python main.py`, `cd /x && python3.12 "my app.py"`, `node server.js`.
+   * Returns undefined for `-m`/`-c` invocations or unresolvable paths, so the
+   * caller falls back to the first traceback frame.
+   */
+  private parseCommandLineFile(cmd: string, anchors: string[]): string | undefined {
+    const segments = cmd.split(/\s*&&\s*|\s*;\s*|\s*\|\|\s*/)
+      .map(s => s.trim())
+      .filter(Boolean);
+    let cwd: string | undefined;
+
+    for (const seg of segments) {
+      const cd = seg.match(/^cd\s+(.+)$/);
+      if (!cd) continue;
+      const target = cd[1].replace(/^['"]|['"]$/g, '');
+      cwd = path.isAbsolute(target)
+        ? target
+        : path.resolve(cwd || anchors[0] || process.cwd(), target);
+    }
+
+    for (let i = segments.length - 1; i >= 0; i--) {
+      const seg = segments[i];
+      if (/^cd\s+/.test(seg)) continue;
+      const file = this.firstScriptToken(this.tokenizeCommand(seg), cwd, anchors);
+      if (file) return file;
+    }
+    return undefined;
+  }
+
+  /** First resolvable script token after interpreter/runner words. */
+  private firstScriptToken(
+    tokens: string[],
+    cwd: string | undefined,
+    anchors: string[],
+  ): string | undefined {
+    const runners = new Set([
+      'python', 'python2', 'python3', 'node', 'bun', 'deno', 'ruby', 'php',
+      'perl', 'bash', 'sh', 'zsh', 'ksh', 'fish', 'npx', 'yarn', 'pnpm',
+      'npm', 'poetry', 'pipenv', 'uv', 'dotnet', 'java', 'go', 'rustc',
+      'cargo', 'make', 'mvn', 'gradle', 'env', 'run', 'exec', 'shell',
+    ]);
+    for (let i = 0; i < tokens.length; i++) {
+      const t = tokens[i];
+      if (runners.has(t) || runners.has(path.basename(t))) continue;
+      if (t === '-m' || t === '-c' || t === '-e') return undefined;
+      if (t.startsWith('-')) continue;
+      const resolved = this.resolveCommandPath(t, cwd, anchors);
+      if (resolved) return resolved;
+      // First non-runner token that is not a resolvable file — likely an
+      // argument or an unavailable script. Give up and use the first frame.
+      return undefined;
+    }
+    return undefined;
+  }
+
+  private resolveCommandPath(
+    raw: string,
+    cwd: string | undefined,
+    anchors: string[],
+  ): string | undefined {
+    const p = raw.replace(/^['"]|['"]$/g, '');
+    if (!p) return undefined;
+    if (path.isAbsolute(p)) return fs.existsSync(p) ? p : undefined;
+    const bases = cwd ? [cwd, ...anchors] : anchors;
+    for (const base of bases) {
+      const full = path.resolve(base, p);
+      if (fs.existsSync(full)) return full;
+    }
+    return undefined;
+  }
+
+  private tokenizeCommand(text: string): string[] {
+    const tokens: string[] = [];
+    const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      tokens.push(m[1] ?? m[2] ?? m[3]);
+    }
+    return tokens;
   }
 
   // ── Guess stage ──
@@ -457,6 +609,18 @@ export class ContextBuilder {
         endLine: actualEnd,
         content: slice,
       };
+    } catch {
+      return null;
+    }
+  }
+
+  private readFileFull(
+    filePath: string,
+  ): { content: string; startLine: number; endLine: number } | null {
+    try {
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const lines = content.split('\n');
+      return { startLine: 1, endLine: lines.length, content };
     } catch {
       return null;
     }

@@ -185,6 +185,38 @@ suite('ChatContext', () => {
     assert.ok(MAX_FILE_CHARS * 3 > MAX_TOTAL_CHARS);
   });
 
+  test('running file is read fully and exempt from caps', () => {
+    const main = path.join(dir, 'main.py');
+    fs.writeFileSync(main, 'x'.repeat(MAX_FILE_CHARS + 100));
+    const manager = new ChatContextManager();
+    manager.setAutoFiles([{
+      path: main,
+      startLine: 1,
+      endLine: 1,
+      content: '',
+      fullContent: true,
+    }]);
+    const payload = manager.buildPayload();
+    assert.strictEqual(payload.views[0].truncated, false);
+    assert.strictEqual(payload.views[0].skipped, false);
+    assert.ok(payload.payload.includes('完整'));
+  });
+
+  test('running file counts toward the total budget without being skipped', () => {
+    const run = path.join(dir, 'main.py');
+    const extra = path.join(dir, 'extra.txt');
+    fs.writeFileSync(run, 'r'.repeat(MAX_TOTAL_CHARS - 100));
+    fs.writeFileSync(extra, 'e'.repeat(MAX_FILE_CHARS));
+    const manager = new ChatContextManager();
+    manager.setAutoFiles([
+      { path: run, startLine: 1, endLine: 1, content: '', fullContent: true },
+      { path: extra, startLine: 1, endLine: 1, content: '' },
+    ]);
+    const payload = manager.buildPayload();
+    assert.strictEqual(payload.views[0].skipped, false);
+    assert.strictEqual(payload.views[1].skipped, true);
+  });
+
   test('restoreDefaults removes user files', async () => {
     const main = path.join(dir, 'main.py');
     const extra = path.join(dir, 'extra.txt');

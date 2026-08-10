@@ -14,6 +14,7 @@ interface ChatContextFileEntry {
   source: 'auto' | 'user';
   startLine: number;
   endLine: number;
+  fullContent?: boolean;
   snapshotContent?: string;
 }
 
@@ -56,6 +57,7 @@ export class ChatContextManager {
         source: 'auto' as const,
         startLine: f.startLine,
         endLine: f.endLine,
+        fullContent: f.fullContent,
         snapshotContent: f.content,
       }));
   }
@@ -108,6 +110,7 @@ export class ChatContextManager {
       const f = s.entry;
       const flags = [
         f.source === 'auto' ? 'auto' : 'user',
+        f.fullContent ? '完整' : '',
         s.changed ? '已变化' : '',
         s.truncated ? '已截断，仅前 ' + MAX_FILE_CHARS + ' 字符' : '',
       ].filter(Boolean).join('，');
@@ -130,6 +133,7 @@ export class ChatContextManager {
     const states: FileState[] = [];
     let total = 0;
     for (const entry of this.allEntries()) {
+      const guaranteed = entry.source === 'auto' && entry.fullContent === true;
       const state: FileState = {
         entry,
         content: '',
@@ -140,9 +144,11 @@ export class ChatContextManager {
       };
       let content: string | null = null;
       try {
-        content = entry.source === 'auto'
-          ? this.readRange(entry.path, entry.startLine, entry.endLine)
-          : fs.readFileSync(entry.path, 'utf-8');
+        content = guaranteed
+          ? fs.readFileSync(entry.path, 'utf-8')
+          : entry.source === 'auto'
+            ? this.readRange(entry.path, entry.startLine, entry.endLine)
+            : fs.readFileSync(entry.path, 'utf-8');
       } catch {
         state.unavailable = true;
         states.push(state);
@@ -153,11 +159,11 @@ export class ChatContextManager {
       if (entry.source === 'auto' && entry.snapshotContent !== undefined && content !== entry.snapshotContent) {
         state.changed = true;
       }
-      if (content.length > MAX_FILE_CHARS) {
+      if (!guaranteed && content.length > MAX_FILE_CHARS) {
         content = content.slice(0, MAX_FILE_CHARS);
         state.truncated = true;
       }
-      if (total + content.length > MAX_TOTAL_CHARS) {
+      if (!guaranteed && total + content.length > MAX_TOTAL_CHARS) {
         state.skipped = true;
         content = '';
       } else {
@@ -211,6 +217,7 @@ export class ChatContextManager {
       source: s.entry.source,
       startLine: s.entry.startLine,
       endLine: s.entry.endLine,
+      fullContent: s.entry.fullContent,
       truncated: s.truncated,
       skipped: s.skipped,
       changed: s.changed,

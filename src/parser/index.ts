@@ -19,16 +19,18 @@
    caretLines?: number[];
  }
  
- export interface ParsedTraceback {
-   errorType: string;
-   errorMessage: string;
-   filePath: string;
-   lineNumber: number;
-   stackFrames: StackFrame[];
-   fullTraceback: string;
-   caretLines?: number[];
-   chain: ChainEntry[];
- }
+export interface ParsedTraceback {
+  errorType: string;
+  errorMessage: string;
+  filePath: string;
+  lineNumber: number;
+  stackFrames: StackFrame[];
+  fullTraceback: string;
+  /** Terminal command that launched the run (e.g. `python main.py`), when known. */
+  commandLine?: string;
+  caretLines?: number[];
+  chain: ChainEntry[];
+}
  
  export type ErrorCategory =
    | 'COMPILATION_ERROR'

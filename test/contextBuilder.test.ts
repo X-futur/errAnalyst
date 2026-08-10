@@ -48,14 +48,16 @@ suite('ContextBuilder — project-only context', () => {
 
     const ctx = new ContextBuilder().build(tb, [ws]);
     assert.ok(!ctx.mainFile, 'a system last frame must not become the main file');
-    assert.ok(ctx.stackFiles.some(f => f.path === mainPy));
+    assert.ok(ctx.runningFile, 'the entry script becomes the running file');
+    assert.strictEqual(ctx.runningFile!.path, mainPy);
+    assert.ok(!ctx.stackFiles.some(f => f.path === mainPy));
     assert.ok(!ctx.stackFiles.some(f => f.path.includes('site-packages')));
     assert.ok(!ctx.configFiles.some(f => f.path.includes('site-packages')));
     assert.ok(!ctx.siblingFiles.some(f => f.path.includes('site-packages')));
     assert.ok(!ctx.guessedFiles.some(f => f.path.includes('site-packages')));
   });
 
-  test('keeps last frame as mainFile when it is a project file', () => {
+  test('captures a single-frame script error as the running file in full', () => {
     const ws = makeTempWorkspace();
     const mainPy = writeFile(ws, 'main.py', 'x = 1 / 0\n');
     const tb = makeTraceback({
@@ -66,8 +68,10 @@ suite('ContextBuilder — project-only context', () => {
     });
 
     const ctx = new ContextBuilder().build(tb, [ws]);
-    assert.ok(ctx.mainFile);
-    assert.strictEqual(ctx.mainFile!.path, mainPy);
+    assert.ok(ctx.runningFile);
+    assert.strictEqual(ctx.runningFile!.path, mainPy);
+    assert.strictEqual(ctx.runningFile!.content, 'x = 1 / 0\n');
+    assert.strictEqual(ctx.mainFile, undefined, 'no duplicate main-file entry');
   });
 
   test('captures .env config with secret values redacted', () => {
@@ -168,6 +172,141 @@ suite('ContextBuilder — project-only context', () => {
 
     const ctx = new ContextBuilder().build(tb, [ws]);
     assert.strictEqual(ctx.siblingFiles.length, 0);
+  });
+});
+
+suite('ContextBuilder — running file full capture', () => {
+  function makeLines(prefix: string, count: number): string {
+    return Array.from({ length: count }, (_, i) => `${prefix}_line_${i + 1}`).join('\n');
+  }
+
+  test('captures the entry script in full from the command line', () => {
+    const ws = makeTempWorkspace();
+    const mainPy = writeFile(ws, 'main.py', makeLines('m', 25));
+    const utilPy = writeFile(ws, 'util.py', makeLines('u', 15));
+    const tb = makeTraceback({
+      commandLine: 'python main.py',
+      filePath: utilPy,
+      lineNumber: 8,
+      stackFrames: [
+        { file: mainPy, line: 3, function: '<module>', codeLine: 'result = util.compute()' },
+        { file: utilPy, line: 8, function: 'compute', codeLine: 'raise ValueError()' },
+      ],
+    });
+
+    const ctx = new ContextBuilder().build(tb, [ws]);
+    assert.ok(ctx.runningFile, 'running file should be captured');
+    assert.strictEqual(ctx.runningFile!.path, mainPy);
+    assert.strictEqual(ctx.runningFile!.source, 'running_file');
+    assert.strictEqual(ctx.runningFile!.startLine, 1);
+    assert.strictEqual(ctx.runningFile!.endLine, 25);
+    assert.ok(ctx.runningFile!.content.includes('m_line_25'));
+    assert.strictEqual(ctx.mainFile?.path, utilPy, 'error file keeps its own window');
+  });
+
+  test('falls back to the first stack frame without a command line', () => {
+    const ws = makeTempWorkspace();
+    const mainPy = writeFile(ws, 'main.py', makeLines('m', 5));
+    const tb = makeTraceback({
+      filePath: mainPy,
+      lineNumber: 4,
+      stackFrames: [{ file: mainPy, line: 4, function: '<module>', codeLine: 'raise ValueError()' }],
+    });
+
+    const ctx = new ContextBuilder().build(tb, [ws]);
+    assert.ok(ctx.runningFile);
+    assert.strictEqual(ctx.runningFile!.path, mainPy);
+    assert.strictEqual(ctx.runningFile!.endLine, 5);
+  });
+
+  test('running file is exempt from the total char budget', () => {
+    const ws = makeTempWorkspace();
+    const mainPy = writeFile(ws, 'main.py', makeLines('m', 1200));
+    const utilPy = writeFile(ws, 'util.py', makeLines('u', 5));
+    const tb = makeTraceback({
+      commandLine: 'python main.py',
+      filePath: utilPy,
+      lineNumber: 3,
+      stackFrames: [
+        { file: mainPy, line: 3, function: '<module>', codeLine: 'util.compute()' },
+        { file: utilPy, line: 3, function: 'compute', codeLine: 'raise ValueError()' },
+      ],
+    });
+
+    const ctx = new ContextBuilder().build(tb, [ws]);
+    assert.ok(ctx.runningFile);
+    assert.ok(ctx.runningFile!.content.length > 7000, 'full content must exceed the old budget');
+    assert.ok(ctx.runningFile!.content.includes('m_line_1200'));
+    assert.strictEqual(ctx.mainFile, undefined, 'remaining budget is zero, no other files fit');
+    assert.strictEqual(ctx.stackFiles.length, 0);
+  });
+
+  test('single-file script error: running file replaces the main slot without duplicates', () => {
+    const ws = makeTempWorkspace();
+    const mainPy = writeFile(ws, 'main.py', makeLines('m', 30));
+    const tb = makeTraceback({
+      commandLine: 'python main.py',
+      filePath: mainPy,
+      lineNumber: 20,
+      stackFrames: [{ file: mainPy, line: 20, function: '<module>', codeLine: 'raise ValueError()' }],
+    });
+
+    const ctx = new ContextBuilder().build(tb, [ws]);
+    assert.ok(ctx.runningFile);
+    assert.strictEqual(ctx.runningFile!.path, mainPy);
+    assert.strictEqual(ctx.runningFile!.content.split('\n').length, 30);
+    assert.strictEqual(ctx.mainFile, undefined);
+    assert.strictEqual(ctx.stackFiles.length, 0);
+  });
+
+  test('module invocation (-m) falls back to the first frame', () => {
+    const ws = makeTempWorkspace();
+    const cliPy = writeFile(ws, 'pkg/cli.py', makeLines('c', 10));
+    const tb = makeTraceback({
+      commandLine: 'python -m pkg.cli',
+      filePath: cliPy,
+      lineNumber: 7,
+      stackFrames: [{ file: cliPy, line: 7, function: '<module>', codeLine: 'raise ValueError()' }],
+    });
+
+    const ctx = new ContextBuilder().build(tb, [ws]);
+    assert.ok(ctx.runningFile);
+    assert.strictEqual(ctx.runningFile!.path, cliPy);
+  });
+
+  test('cd-prefixed command resolves against the cd target and extends anchors', () => {
+    const ws = makeTempWorkspace();
+    const outside = makeTempWorkspace();
+    const mainPy = writeFile(outside, 'main.py', makeLines('x', 8));
+    const utilPy = writeFile(ws, 'util.py', 'raise ValueError()\n');
+    const tb = makeTraceback({
+      commandLine: `cd ${outside} && python main.py`,
+      filePath: utilPy,
+      lineNumber: 1,
+      stackFrames: [
+        { file: mainPy, line: 5, function: '<module>', codeLine: 'util.compute()' },
+        { file: utilPy, line: 1, function: 'compute', codeLine: 'raise ValueError()' },
+      ],
+    });
+
+    const ctx = new ContextBuilder().build(tb, [ws]);
+    assert.ok(ctx.runningFile, 'running file outside the workspace must be captured');
+    assert.strictEqual(ctx.runningFile!.path, mainPy);
+    assert.ok(ctx.anchors.includes(outside), 'running file dir must become a temp anchor');
+  });
+
+  test('excludes a running file inside a dependency directory', () => {
+    const ws = makeTempWorkspace();
+    const dep = writeFile(ws, 'node_modules/cli/index.js', 'throw new Error()\n');
+    const tb = makeTraceback({
+      commandLine: `node ${dep}`,
+      filePath: dep,
+      lineNumber: 1,
+      stackFrames: [{ file: dep, line: 1, function: '<anonymous>', codeLine: 'throw new Error()' }],
+    });
+
+    const ctx = new ContextBuilder().build(tb, [ws]);
+    assert.strictEqual(ctx.runningFile, undefined);
   });
 });
 

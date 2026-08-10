@@ -574,6 +574,7 @@ function parsedTracebackFromResult(result) {
         stackFrames: result.stackFrames || [],
         fullTraceback: result.fullTraceback || '',
         chain: result.chain || [],
+        commandLine: result.commandLine,
     };
 }
 function analysisTextFromResult(result) {
@@ -585,6 +586,7 @@ function analysisTextFromResult(result) {
 }
 function contextToAutoFiles(context) {
     const files = [
+        context.runningFile,
         context.mainFile,
         ...context.stackFiles,
         ...context.configFiles,
@@ -596,6 +598,7 @@ function contextToAutoFiles(context) {
         startLine: f.startLine,
         endLine: f.endLine,
         content: f.content,
+        fullContent: f.source === 'running_file',
     }));
 }
 function currentActiveFile() {
@@ -631,6 +634,7 @@ async function runFixFlow() {
             stackFrames: lastError.stackFrames || [],
             fullTraceback: lastError.fullTraceback || '',
             chain: lastError.chain || [],
+            commandLine: lastError.commandLine,
         };
         const context = contextBuilder.build(parsedTraceback, workspaceFolders, currentActiveFile());
         const analysisText = [
@@ -675,6 +679,8 @@ async function generateFixHunks(provider, traceback, context, analysisText) {
 }
 function collectAllowedFiles(context, traceback) {
     const files = new Set();
+    if (context.runningFile)
+        files.add(context.runningFile.path);
     if (context.mainFile)
         files.add(context.mainFile.path);
     for (const f of [
@@ -708,6 +714,7 @@ async function autoAnalyze(result, category, options) {
         stackFrames: result.stackFrames || [],
         fullTraceback: result.fullTraceback || '',
         chain: result.chain || [],
+        commandLine: result.commandLine,
     };
     const context = contextBuilder.build(parsedTraceback, workspaceFolders, currentActiveFile());
     analysisViewProvider.showContext(result.fullTraceback, context);
@@ -729,12 +736,16 @@ async function autoAnalyze(result, category, options) {
     // ── Debug: log full prompt ──
     console.log('\n' + '='.repeat(80));
     console.log('═══ 构建上下文概要 ═══');
+    console.log('  runningFile:', context.runningFile?.path || '(none)');
     console.log('  mainFile:', context.mainFile?.path || '(none)');
     console.log('  stackFiles:', context.stackFiles.length);
     console.log('  configFiles:', context.configFiles.length);
     console.log('  siblingFiles:', context.siblingFiles.length);
-    for (const f of [context.mainFile, ...context.stackFiles, ...context.configFiles, ...context.siblingFiles].filter(Boolean)) {
+    for (const f of [context.runningFile, context.mainFile, ...context.stackFiles, ...context.configFiles, ...context.siblingFiles].filter(Boolean)) {
         console.log(`    [${f.source}] ${f.path}:${f.startLine}-${f.endLine} (${f.content.length} chars)`);
+    }
+    if (context.runningFile && context.runningFile.content.length > contextBuilder_1.RUNNING_FILE_SOFT_LIMIT) {
+        console.log(`  ⚠ 运行文件超过 ${contextBuilder_1.RUNNING_FILE_SOFT_LIMIT} 字符，可能影响分析质量: ${context.runningFile.path}`);
     }
     console.log('\n═══ 报错结构化数据 ═══');
     console.log(JSON.stringify({

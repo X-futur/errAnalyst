@@ -26,6 +26,8 @@ export interface ErrorAnalysisResult {
   category?: string;
   firstErrorLine?: string;
   hasExitCode?: boolean;
+  /** Terminal command that launched the run (e.g. `python main.py`). */
+  commandLine?: string;
 
   // ── From AI ──
   translation?: string;

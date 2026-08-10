@@ -11,6 +11,7 @@
  }
  
 export type CandidateSource =
+  | 'running_file'          // 运行文件（用户实际运行的入口脚本，全量捕获）
   | 'primary_last_frame'    // primary 栈帧最后一帧
   | 'primary_other_frame'   // primary 栈帧其他帧
   | 'chain_root_frame'      // chain 根因的栈帧
@@ -21,8 +22,8 @@ export type CandidateSource =
  
  // ── Default scoring parameters ──
  
- export interface ScoringParams {
-   primaryLastFramePriority: number;
+export interface ScoringParams {
+  primaryLastFramePriority: number;
    primaryLastFrameLines: number;       // ± lines for read
    chainRootFramePriority: number;
    chainRootFrameLines: number;
@@ -40,8 +41,8 @@ export type CandidateSource =
   maxTotalChars: number;
 }
  
- export const DEFAULT_SCORING_PARAMS: ScoringParams = {
-   primaryLastFramePriority: 100,
+export const DEFAULT_SCORING_PARAMS: ScoringParams = {
+  primaryLastFramePriority: 100,
    primaryLastFrameLines: 60,
    chainRootFramePriority: 90,
    chainRootFrameLines: 40,

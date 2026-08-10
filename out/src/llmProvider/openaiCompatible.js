@@ -279,8 +279,16 @@ function buildUserPrompt(traceback, category, context) {
     // ═══ Part 3: 源代码上下文（contextBuilder 按优先级挑选的） ═══
     lines.push('## Source Context');
     lines.push('');
-    const hasContext = (context?.mainFile || context?.stackFiles?.length || context?.configFiles?.length || context?.siblingFiles?.length || context?.guessedFiles?.length);
+    const hasContext = (context?.runningFile || context?.mainFile || context?.stackFiles?.length || context?.configFiles?.length || context?.siblingFiles?.length || context?.guessedFiles?.length);
     if (hasContext) {
+        if (context.runningFile) {
+            const isErrorFile = context.runningFile.path === traceback.filePath;
+            lines.push('### ' + context.runningFile.path + ':' + context.runningFile.startLine + '-' + context.runningFile.endLine + ' (运行文件, full, P0' + (isErrorFile ? ', error location' : '') + ')');
+            lines.push('```');
+            lines.push(context.runningFile.content);
+            lines.push('```');
+            lines.push('');
+        }
         if (context.mainFile) {
             lines.push('### ' + context.mainFile.path + ':' + context.mainFile.startLine + '-' + context.mainFile.endLine + ' (error location, P0)');
             lines.push('```');

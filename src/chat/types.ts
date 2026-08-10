@@ -13,6 +13,7 @@ export interface ChatContextFileView {
   source: 'auto' | 'user';
   startLine: number;
   endLine: number;
+  fullContent?: boolean;
   truncated: boolean;
   skipped: boolean;
   changed: boolean;
@@ -33,4 +34,6 @@ export interface ChatAutoFileInput {
   startLine: number;
   endLine: number;
   content: string;
+  /** Entry script (运行文件): read fully and exempt from truncation/skip caps. */
+  fullContent?: boolean;
 }

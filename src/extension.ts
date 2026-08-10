@@ -4,7 +4,7 @@ import path = require('path');
 import { Config } from './config';
 import { PythonTracebackParser } from './parser/pythonTraceback';
 import { CategoryClassifier } from './diagnostics/categoryClassifier';
-import { ContextBuilder } from './context/contextBuilder';
+import { ContextBuilder, RUNNING_FILE_SOFT_LIMIT } from './context/contextBuilder';
 import { isProjectFile } from './context/projectFiles';
 import { ErrorMemory } from './storage/errorMemory';
 import { TerminalWatcher } from './terminalWatcher';
@@ -575,6 +575,7 @@ function parsedTracebackFromResult(result: ErrorAnalysisResult): ParsedTraceback
     stackFrames: result.stackFrames || [],
     fullTraceback: result.fullTraceback || '',
     chain: result.chain || [],
+    commandLine: result.commandLine,
   };
 }
 
@@ -588,6 +589,7 @@ function analysisTextFromResult(result: ErrorAnalysisResult): string {
 
 function contextToAutoFiles(context: BuiltContext): ChatAutoFileInput[] {
   const files: FileContext[] = [
+    context.runningFile,
     context.mainFile,
     ...context.stackFiles,
     ...context.configFiles,
@@ -599,6 +601,7 @@ function contextToAutoFiles(context: BuiltContext): ChatAutoFileInput[] {
     startLine: f.startLine,
     endLine: f.endLine,
     content: f.content,
+    fullContent: f.source === 'running_file',
   }));
 }
 
@@ -637,6 +640,7 @@ async function runFixFlow(): Promise<void> {
       stackFrames: lastError.stackFrames || [],
       fullTraceback: lastError.fullTraceback || '',
       chain: lastError.chain || [],
+      commandLine: lastError.commandLine,
     };
     const context = contextBuilder.build(parsedTraceback, workspaceFolders, currentActiveFile());
     const analysisText = [
@@ -689,6 +693,7 @@ async function generateFixHunks(
 
 function collectAllowedFiles(context: BuiltContext, traceback: ParsedTraceback): string[] {
   const files = new Set<string>();
+  if (context.runningFile) files.add(context.runningFile.path);
   if (context.mainFile) files.add(context.mainFile.path);
   for (const f of [
     ...context.stackFiles,
@@ -728,6 +733,7 @@ async function autoAnalyze(
     stackFrames: result.stackFrames || [],
     fullTraceback: result.fullTraceback || '',
     chain: result.chain || [],
+    commandLine: result.commandLine,
   };
 
   const context = contextBuilder.build(parsedTraceback, workspaceFolders, currentActiveFile());
@@ -760,12 +766,16 @@ async function autoAnalyze(
   // ── Debug: log full prompt ──
   console.log('\n' + '='.repeat(80));
   console.log('═══ 构建上下文概要 ═══');
+  console.log('  runningFile:', context.runningFile?.path || '(none)');
   console.log('  mainFile:', context.mainFile?.path || '(none)');
   console.log('  stackFiles:', context.stackFiles.length);
   console.log('  configFiles:', context.configFiles.length);
   console.log('  siblingFiles:', context.siblingFiles.length);
-  for (const f of [context.mainFile, ...context.stackFiles, ...context.configFiles, ...context.siblingFiles].filter(Boolean)) {
+  for (const f of [context.runningFile, context.mainFile, ...context.stackFiles, ...context.configFiles, ...context.siblingFiles].filter(Boolean)) {
     console.log(`    [${f!.source}] ${f!.path}:${f!.startLine}-${f!.endLine} (${f!.content.length} chars)`);
+  }
+  if (context.runningFile && context.runningFile.content.length > RUNNING_FILE_SOFT_LIMIT) {
+    console.log(`  ⚠ 运行文件超过 ${RUNNING_FILE_SOFT_LIMIT} 字符，可能影响分析质量: ${context.runningFile.path}`);
   }
   console.log('\n═══ 报错结构化数据 ═══');
   console.log(JSON.stringify({

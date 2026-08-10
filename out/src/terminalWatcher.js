@@ -53,6 +53,10 @@ function stripAnsi(text) {
     text = text.replace(/\r/g, '');
     return text;
 }
+/** Normalize TerminalShellExecutionCommandLine to its raw string form. */
+function commandLineToString(cl) {
+    return cl?.value;
+}
 /**
  * True when the parsed error is a KeyboardInterrupt caused by a manual stop
  * (e.g. Ctrl+C). The parser may fall back to errorType "Error" with
@@ -103,10 +107,10 @@ class TerminalWatcher {
                 return;
             }
             if (exitCode !== 0) {
-                this.checkForError(buffer, exitCode);
+                this.checkForError(buffer, exitCode, commandLineToString(event.execution.commandLine));
             }
             else {
-                this.checkForSupplementaryError(buffer);
+                this.checkForSupplementaryError(buffer, commandLineToString(event.execution.commandLine));
             }
         }));
         // ── 触发 2: TerminalLinkProvider ──
@@ -152,6 +156,7 @@ class TerminalWatcher {
             console.log('TerminalWatcher: cleared buffer for', termId);
             // 从 execution.read() 获取数据（可能被截断，作为备用）
             const execution = event.execution;
+            const commandLine = commandLineToString(event.execution.commandLine);
             let execBuffer = '';
             try {
                 for await (const data of execution.read()) {
@@ -168,7 +173,7 @@ class TerminalWatcher {
                 const bestBuf = lineBuf.length > execBuffer.length ? lineBuf : execBuffer;
                 console.log('TerminalWatcher: trigger4 check, execBuf=' + execBuffer.length + ' lineBuf=' + lineBuf.length + ' using=' + (lineBuf.length > execBuffer.length ? 'lineBuf' : 'execBuf'));
                 if (bestBuf) {
-                    this.checkForStreamData(bestBuf);
+                    this.checkForStreamData(bestBuf, commandLine);
                 }
             }, 1500);
         }));
@@ -190,24 +195,24 @@ class TerminalWatcher {
         ];
         return kw.some(k => data.includes(k));
     }
-    checkForError(buffer, exitCode) {
-        this.processBuffer(buffer, exitCode);
+    checkForError(buffer, exitCode, commandLine) {
+        this.processBuffer(buffer, exitCode, commandLine);
     }
-    checkForSupplementaryError(buffer) {
+    checkForSupplementaryError(buffer, commandLine) {
         if (!buffer.includes('Traceback'))
             return;
-        this.processBuffer(buffer);
+        this.processBuffer(buffer, undefined, commandLine);
     }
-    checkForStreamData(buffer) {
+    checkForStreamData(buffer, commandLine) {
         if (!buffer)
             return;
-        this.processBuffer(buffer);
+        this.processBuffer(buffer, undefined, commandLine);
     }
     /**
      * Strip ANSI escape sequences from terminal output.
      * Handles CSI sequences (\x1b[...m) and OSC sequences (\x1b]...;...\x07).
      */
-    processBuffer(buffer, exitCode) {
+    processBuffer(buffer, exitCode, commandLine) {
         buffer = stripAnsi(buffer).replace(/\r\n/g, '\n');
         const traceback = pythonTraceback_1.PythonTracebackParser.extractErrorBlock(buffer);
         const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
@@ -231,6 +236,7 @@ class TerminalWatcher {
             fullTraceback: parseResult.fullTraceback,
             chain: parseResult.chain,
             hasExitCode: exitCode !== undefined ? exitCode !== 0 : true,
+            commandLine,
             firstErrorLine: pythonTraceback_1.PythonTracebackParser.extractFirstErrorLine(buffer),
             timestamp: Date.now(),
         };
