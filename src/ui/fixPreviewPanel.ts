@@ -23,6 +23,10 @@ export class FixPreviewPanel {
   private error = '';
   private snapshot: FixViewSnapshot | null = null;
   private selectedFile = '';
+  /** 定位目标：每次重渲染后自动滚动到该修改处，直到用户手动滚动或切换文件。 */
+  private focusHunkId: string | null = null;
+  /** 生成中标记：下一次成功展示会话时自动定位到第一处修改处。 */
+  private pendingAutoFocus = false;
   /** Set when the user closes the tab manually; suppress auto-reopen. */
   private userClosed = false;
   private closingByUs = false;
@@ -45,6 +49,8 @@ export class FixPreviewPanel {
     this.error = '';
     this.snapshot = null;
     this.userClosed = false;
+    this.focusHunkId = null;
+    this.pendingAutoFocus = true;
     this.render();
   }
 
@@ -53,10 +59,12 @@ export class FixPreviewPanel {
     this.error = message;
     this.snapshot = null;
     this.userClosed = false;
+    this.focusHunkId = null;
+    this.pendingAutoFocus = false;
     this.render();
   }
 
-  showSession(snapshot: FixViewSnapshot, selectFile?: string, force = false): void {
+  showSession(snapshot: FixViewSnapshot, selectFile?: string, force = false, focusHunkId?: string): void {
     if (!this.panel && this.userClosed && !force) return;
     this.userClosed = false;
     this.mode = 'session';
@@ -67,7 +75,26 @@ export class FixPreviewPanel {
     if (!this.selectedFile || !snapshot.files.some(f => f.file === this.selectedFile)) {
       this.selectedFile = snapshot.files[0]?.file || '';
     }
+    if (focusHunkId) {
+      this.focusHunkId = focusHunkId;
+      this.pendingAutoFocus = false;
+    } else if (this.pendingAutoFocus) {
+      this.pendingAutoFocus = false;
+      const first = this.firstFocusableHunkId(snapshot);
+      this.focusHunkId = first;
+      const firstHunk = first ? snapshot.hunks.find(h => h.id === first) : undefined;
+      if (firstHunk && snapshot.files.some(f => f.file === firstHunk.file)) {
+        this.selectedFile = firstHunk.file;
+      }
+    }
     this.render();
+  }
+
+  private firstFocusableHunkId(snapshot: FixViewSnapshot): string | null {
+    for (const h of snapshot.hunks) {
+      if (h.status !== 'stale') return h.id;
+    }
+    return null;
   }
 
   close(): void {
@@ -81,6 +108,8 @@ export class FixPreviewPanel {
     this.error = '';
     this.snapshot = null;
     this.selectedFile = '';
+    this.focusHunkId = null;
+    this.pendingAutoFocus = false;
     this.userClosed = false;
   }
 
@@ -105,6 +134,8 @@ export class FixPreviewPanel {
         // The session stays active; the card's 预览 button can force reopen.
         this.snapshot = null;
         this.selectedFile = '';
+        this.focusHunkId = null;
+        this.pendingAutoFocus = false;
       });
       this.disposables.push(
         this.panel.webview.onDidReceiveMessage(msg => this.handleMessage(msg))
@@ -129,8 +160,12 @@ export class FixPreviewPanel {
       case 'switchFile':
         if (typeof msg.file === 'string') {
           this.selectedFile = msg.file;
+          this.focusHunkId = null;
           this.render();
         }
+        break;
+      case 'clearFocus':
+        this.focusHunkId = null;
         break;
       case 'openFile':
         if (typeof msg.file === 'string' && typeof msg.line === 'number') {
@@ -228,10 +263,47 @@ body[data-theme="lightplus"]{--tok-kw:#0000FF;--tok-ctrl:#AF00DB;--tok-string:#A
 .p-text .tok-const{color:var(--tok-const);}
 </style>
 </head>
-<body data-theme="${this.currentThemePalette()}">
+<body data-theme="${this.currentThemePalette()}" data-focus="${this.escAttr(this.focusHunkId || '')}">
 ${body}
 <script>
 const vscode = acquireVsCodeApi();
+const focusId = document.body.getAttribute('data-focus');
+let suppressScrollMsg = false;
+function scrollToFocus() {
+  if (!focusId) return;
+  // hunk id 由扩展生成（hunk-时间戳-序号），可直接用作元素 id 的后缀。
+  const block = document.getElementById('ph-' + focusId);
+  if (!block) {
+    // 定位目标已不存在（例如该修改处随后失效），静默清除，不再尝试。
+    vscode.postMessage({ type: 'clearFocus' });
+    return;
+  }
+  suppressScrollMsg = true;
+  const scroller = document.querySelector('.content');
+  if (scroller && scroller.scrollHeight > scroller.clientHeight) {
+    // 直接计算目标位置：把改动块顶部滚动到内容区顶部（留 4px 边距）。
+    const cRect = scroller.getBoundingClientRect();
+    const bRect = block.getBoundingClientRect();
+    scroller.scrollTop = scroller.scrollTop + (bRect.top - cRect.top) - 4;
+  } else {
+    block.scrollIntoView({ block: 'start' });
+  }
+  setTimeout(() => { suppressScrollMsg = false; }, 300);
+}
+document.addEventListener('scroll', function(e) {
+  if (suppressScrollMsg) return;
+  const t = e.target;
+  if (t && t.classList && t.classList.contains('content')) {
+    // 用户手动滚动离开定位目标后清除定位。
+    vscode.postMessage({ type: 'clearFocus' });
+  }
+}, true);
+scrollToFocus();
+// 首次打开面板时布局可能尚未完成，滚动会静默空转；重复几次直到布局稳定。
+requestAnimationFrame(scrollToFocus);
+window.addEventListener('load', scrollToFocus);
+setTimeout(scrollToFocus, 100);
+setTimeout(scrollToFocus, 300);
 document.addEventListener('click', function(e) {
   const t = e.target;
   if (!t || !t.classList) return;
@@ -306,7 +378,7 @@ document.addEventListener('click', function(e) {
         const openLink = hunk && hunk.line > 0
           ? `<span class="p-open" data-file="${this.escAttr(hunk.file)}" data-line="${hunk.line}">打开</span>`
           : '';
-        html += '<div class="p-block">'
+        html += `<div class="p-block"${block.hunkId ? ` id="ph-${this.escAttr(block.hunkId)}" data-hunk="${this.escAttr(block.hunkId)}"` : ''}>`
           + '<div class="p-block-head">'
           + `<span class="p-reason" title="${this.escAttr(block.reason || '')}">${this.esc(block.reason || '')}</span>`
           + `<span class="p-status ${block.status}">${statusText[block.status] || block.status}</span>`

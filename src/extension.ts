@@ -349,7 +349,7 @@ function handleFixAction(action: FixWebviewAction, hunkId?: string): void {
       const snapshot = fixSessionManager.getSnapshot();
       if (!snapshot) break;
       const hunk = hunkId ? snapshot.hunks.find(h => h.id === hunkId) : undefined;
-      fixPreviewPanel.showSession(snapshot, hunk?.file, true);
+      fixPreviewPanel.showSession(snapshot, hunk?.file, true, hunk?.id);
       break;
     }
   }

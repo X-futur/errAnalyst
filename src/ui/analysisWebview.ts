@@ -489,7 +489,9 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
           + `<span class="fix-hunk-file">${this.esc(h.file)}${h.line ? ':' + h.line : ''}</span>`
           + `<span class="fix-hunk-reason">${this.esc(h.reason)}</span>`
           + `<span class="fix-hunk-status">${statusLabel[h.status] || h.status}</span>`
-          + `<button class="fix-mini-btn" onclick="fixAction('previewFixHunk','${h.id}')">预览</button>`
+          + (h.status === 'stale'
+            ? `<button class="fix-mini-btn" disabled title="该修改处已失效，无可预览内容">预览</button>`
+            : `<button class="fix-mini-btn" onclick="fixAction('previewFixHunk','${h.id}')">预览</button>`)
           + (h.status === 'pending'
             ? `<button class="fix-mini-btn" onclick="fixAction('acceptFixHunk','${h.id}')">接受</button>`
             + `<button class="fix-mini-btn reject" onclick="fixAction('rejectFixHunk','${h.id}')">拒绝</button>`
@@ -903,6 +905,8 @@ h3{margin-bottom:8px;font-size:14px;}h4{font-size:11px;text-transform:uppercase;
 .fix-hunk-status{color:var(--text-muted);white-space:nowrap;}
 .fix-mini-btn{background:transparent;border:1px solid var(--border);color:var(--text);border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;white-space:nowrap;}
 .fix-mini-btn:hover{border-color:var(--accent);}
+.fix-mini-btn:disabled{opacity:.45;cursor:not-allowed;}
+.fix-mini-btn:disabled:hover{border-color:var(--border);}
 .fix-mini-btn.reject:hover{border-color:#f44747;color:#f44747;}
 .fix-empty{color:var(--text-muted);font-size:11px;}
 </style>
