@@ -30,8 +30,7 @@ export type FixWebviewAction =
   | 'acceptAllFix'
   | 'rejectAllFix'
   | 'undoAllFix'
-  | 'finishFix'
-  | 'openFixHunk';
+  | 'finishFix';
 
 export type ChatWebviewAction =
   | 'newChatSession'
@@ -169,7 +168,6 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
       case 'acceptFixHunk':
       case 'rejectFixHunk':
       case 'previewFixHunk':
-      case 'openFixHunk':
         this.handlers.onFixAction(msg.type, msg.hunkId);
         break;
       case 'acceptAllFix':
@@ -496,7 +494,6 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
             ? `<button class="fix-mini-btn" onclick="fixAction('acceptFixHunk','${h.id}')">接受</button>`
             + `<button class="fix-mini-btn reject" onclick="fixAction('rejectFixHunk','${h.id}')">拒绝</button>`
             : '')
-          + (h.line ? `<button class="fix-mini-btn" onclick="fixAction('openFixHunk','${h.id}')">查看</button>` : '')
           + '</div>'
           + '</div>';
       }

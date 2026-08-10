@@ -269,22 +269,6 @@ export class FixSessionManager {
     return { written, skipped, failed, cancelled: false };
   }
 
-  async openHunk(hunkId: string): Promise<void> {
-    const session = this.session;
-    const hunk = session?.hunks.find(h => h.id === hunkId);
-    if (!session || !hunk) return;
-    const line = this.hunkLines.get(hunkId);
-    if (!line) return;
-    try {
-      const doc = await vscode.workspace.openTextDocument(hunk.file);
-      const editor = await vscode.window.showTextDocument(doc);
-      const lineIdx = Math.max(0, line - 1);
-      const range = doc.lineAt(Math.min(lineIdx, doc.lineCount - 1)).range;
-      editor.selection = new vscode.Selection(range.start, range.end);
-      editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
-    } catch { /* file may be gone */ }
-  }
-
   getSnapshot(): FixViewSnapshot | null {
     return this.session ? this.buildSnapshot(this.session) : null;
   }

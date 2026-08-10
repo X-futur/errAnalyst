@@ -340,10 +340,6 @@ function handleFixAction(action, hunkId) {
         case 'finishFix':
             void finishFixSession();
             break;
-        case 'openFixHunk':
-            if (hunkId)
-                void fixSessionManager.openHunk(hunkId);
-            break;
         case 'previewFixHunk': {
             const snapshot = fixSessionManager.getSnapshot();
             if (!snapshot)

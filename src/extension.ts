@@ -342,9 +342,6 @@ function handleFixAction(action: FixWebviewAction, hunkId?: string): void {
     case 'finishFix':
       void finishFixSession();
       break;
-    case 'openFixHunk':
-      if (hunkId) void fixSessionManager.openHunk(hunkId);
-      break;
     case 'previewFixHunk': {
       const snapshot = fixSessionManager.getSnapshot();
       if (!snapshot) break;
