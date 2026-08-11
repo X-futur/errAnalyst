@@ -87,6 +87,26 @@ suite('FixPrompt', () => {
     assert.deepStrictEqual(hunks[0].newLines, []);
   });
 
+  test('splits embedded newlines inside oldLines/newLines elements', () => {
+    const content = JSON.stringify({
+      changes: [{ file: '/p/main.py', reason: 'x', oldLines: ['a\nb'], newLines: ['a\nb', 'c'] }],
+    });
+    const hunks = parseFixResponse(content, ['/p/main.py']);
+    assert.strictEqual(hunks.length, 1);
+    assert.deepStrictEqual(hunks[0].oldLines, ['a', 'b']);
+    assert.deepStrictEqual(hunks[0].newLines, ['a', 'b', 'c']);
+  });
+
+  test('splits CRLF inside elements', () => {
+    const content = JSON.stringify({
+      changes: [{ file: '/p/main.py', reason: 'x', oldLines: ['a\r\nb'], newLines: ['a\r\nb'] }],
+    });
+    const hunks = parseFixResponse(content, ['/p/main.py']);
+    assert.strictEqual(hunks.length, 1);
+    assert.deepStrictEqual(hunks[0].oldLines, ['a', 'b']);
+    assert.deepStrictEqual(hunks[0].newLines, ['a', 'b']);
+  });
+
   test('skips hunks without oldLines anchor', () => {
     const content = JSON.stringify({
       changes: [{ file: '/p/main.py', reason: 'bad', oldLines: [], newLines: ['x'] }],
@@ -167,6 +187,60 @@ suite('FixPreview', () => {
       ['context', 'x', 1],
       ['added', 'y', 2],
       ['added', 'z', 3],
+    ]);
+  });
+
+  test('insertion in the middle of a hunk renders at its true position', () => {
+    const file = buildFilePreview(['p', 'x', 't'], [mkHunk('h1', ['p', 'x'], ['p', 'N', 'x'])], '/p/main.py');
+    const kinds = file.blocks.flatMap(b => b.lines.map(l => [l.kind, l.text, l.lineNo] as const));
+    assert.deepStrictEqual(kinds, [
+      ['context', 'p', 1],
+      ['added', 'N', 2],
+      ['context', 'x', 3],
+      ['context', 't', 4],
+    ]);
+  });
+
+  test('middle insertion line numbers match the final file', () => {
+    const fileLines = ['import os', 'print("a")', 'x = 1', 'y = 2'];
+    const hunk = mkHunk('h1', ['print("a")', 'x = 1'], ['print("a")', 'print("NEW")', 'x = 1']);
+    const preview = buildFilePreview(fileLines, [hunk], '/p/main.py');
+    const final = buildFinalLines(fileLines, [mkHunk('h1', hunk.oldLines, hunk.newLines, 'accepted')]);
+    for (const line of preview.blocks.flatMap(b => b.lines)) {
+      if (line.kind === 'context' || line.kind === 'added') {
+        assert.strictEqual(line.lineNo, final.indexOf(line.text) + 1, line.text);
+      }
+    }
+  });
+
+  test('duplicate anchor lines keep the first occurrence as context', () => {
+    const file = buildFilePreview(['b', 'c'], [mkHunk('h1', ['b', 'c'], ['b', 'b', 'c'])], '/p/main.py');
+    const kinds = file.blocks.flatMap(b => b.lines.map(l => [l.kind, l.text] as const));
+    assert.deepStrictEqual(kinds, [
+      ['context', 'b'],
+      ['added', 'b'],
+      ['context', 'c'],
+    ]);
+  });
+
+  test('accepted middle insertion keeps the new line at its final position', () => {
+    const file = buildFilePreview(['p', 'x', 't'], [mkHunk('h1', ['p', 'x'], ['p', 'N', 'x'], 'accepted')], '/p/main.py');
+    const kinds = file.blocks.flatMap(b => b.lines.map(l => [l.kind, l.text, l.lineNo] as const));
+    assert.deepStrictEqual(kinds, [
+      ['context', 'p', 1],
+      ['added', 'N', 2],
+      ['context', 'x', 3],
+      ['context', 't', 4],
+    ]);
+  });
+
+  test('rejected middle insertion keeps original lines in place', () => {
+    const file = buildFilePreview(['p', 'x', 't'], [mkHunk('h1', ['p', 'x'], ['p', 'N', 'x'], 'rejected')], '/p/main.py');
+    const kinds = file.blocks.flatMap(b => b.lines.map(l => [l.kind, l.text, l.lineNo] as const));
+    assert.deepStrictEqual(kinds, [
+      ['context', 'p', 1],
+      ['context', 'x', 2],
+      ['context', 't', 3],
     ]);
   });
 

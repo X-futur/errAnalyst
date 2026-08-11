@@ -29,9 +29,21 @@ export interface LineDiff {
   removed: number[];
   /** Indices into newLines that are added. */
   added: number[];
+  /** Ordered edit script: the true sequence of context/removed/added rows. */
+  ops: DiffOp[];
 }
 
-/** Longest common subsequence diff over lines, for green/red rendering. */
+export type DiffOp =
+  | { type: 'context'; oldIdx: number; newIdx: number; text: string }
+  | { type: 'removed'; oldIdx: number; text: string }
+  | { type: 'added'; newIdx: number; text: string };
+
+/**
+ * Longest common subsequence diff over lines, for green/red rendering.
+ * The returned `ops` preserves the edit-script order so renderers can show
+ * added rows at their true position (e.g. an insertion in the middle of a
+ * hunk) instead of appending every added row after every old row.
+ */
 export function diffLines(oldLines: string[], newLines: string[]): LineDiff {
   const m = oldLines.length;
   const n = newLines.length;
@@ -47,20 +59,30 @@ export function diffLines(oldLines: string[], newLines: string[]): LineDiff {
 
   const removed: number[] = [];
   const added: number[] = [];
+  const ops: DiffOp[] = [];
   let i = 0;
   let j = 0;
   while (i < m && j < n) {
     if (normalizeLine(oldLines[i]) === normalizeLine(newLines[j])) {
+      ops.push({ type: 'context', oldIdx: i, newIdx: j, text: oldLines[i] });
       i++;
       j++;
     } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      ops.push({ type: 'removed', oldIdx: i, text: oldLines[i] });
       removed.push(i++);
     } else {
+      ops.push({ type: 'added', newIdx: j, text: newLines[j] });
       added.push(j++);
     }
   }
-  while (i < m) removed.push(i++);
-  while (j < n) added.push(j++);
+  while (i < m) {
+    ops.push({ type: 'removed', oldIdx: i, text: oldLines[i] });
+    removed.push(i++);
+  }
+  while (j < n) {
+    ops.push({ type: 'added', newIdx: j, text: newLines[j] });
+    added.push(j++);
+  }
 
-  return { removed, added };
+  return { removed, added, ops };
 }

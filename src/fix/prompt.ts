@@ -254,8 +254,12 @@ export function parseFixResponseWithReason(content: string, allowedFiles: string
     if (!Array.isArray(item.oldLines) || !Array.isArray(item.newLines)) continue;
     if (item.oldLines.length === 0) continue;
 
-    const oldLines = item.oldLines.filter((l): l is string => typeof l === 'string').map(normalizeLine);
-    const newLines = item.newLines.filter((l): l is string => typeof l === 'string').map(normalizeLine);
+    // Models occasionally pack multiple lines into one array element
+    // (e.g. "print(a)\nprint(b)"). Split them so every element is exactly one
+    // source line: the preview can then render and number rows correctly and
+    // the written file content stays identical.
+    const oldLines = splitLineElements(item.oldLines);
+    const newLines = splitLineElements(item.newLines);
     if (oldLines.length === 0) continue;
 
     const file = resolveAllowedFile(item.file, allowedFiles);
@@ -272,6 +276,13 @@ export function parseFixResponseWithReason(content: string, allowedFiles: string
     ? data.reason.trim()
     : undefined;
   return { hunks: result, reason };
+}
+
+function splitLineElements(arr: unknown[]): string[] {
+  return arr
+    .filter((l): l is string => typeof l === 'string')
+    .flatMap(s => s.split(/\r?\n/))
+    .map(normalizeLine);
 }
 
 function resolveAllowedFile(candidate: string, allowedFiles: string[]): string | null {

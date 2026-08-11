@@ -38,23 +38,16 @@ export interface HunkEdit {
   /** 0-based inclusive range of oldLines inside the original file. */
   startLine: number;
   endLine: number;
-  /** Indices into hunk.oldLines that are actually removed (LCS). */
-  removedIdx: number[];
-  /** Indices into hunk.newLines that are actually added (LCS). */
-  addedIdx: number[];
 }
 
 /** Locate a hunk inside the original snapshot and compute its LCS diff. */
 export function computeHunkEdit(hunk: FixHunk, originalLines: string[]): HunkEdit | null {
   const range = findLineRange(originalLines, hunk.oldLines);
   if (!range) return null;
-  const diff = diffLines(hunk.oldLines, hunk.newLines);
   return {
     hunk,
     startLine: range.startLine,
     endLine: range.endLine,
-    removedIdx: diff.removed,
-    addedIdx: diff.added,
   };
 }
 
@@ -102,19 +95,20 @@ export function buildFilePreview(originalLines: string[], hunks: FixHunk[], file
       lines: [],
     };
 
-    // Original lines of the hunk region.
-    for (let i = 0; i < edit.hunk.oldLines.length; i++) {
-      const isRemoved = edit.removedIdx.includes(i);
-      if (edit.hunk.status === 'accepted' && isRemoved) continue; // accepted: old removed lines vanish
-      const kind = edit.hunk.status === 'rejected' || !isRemoved ? 'context' : 'removed';
-      push(block, kind, edit.hunk.oldLines[i], edit.hunk.id);
-    }
-    // New lines of the hunk region.
-    for (let j = 0; j < edit.hunk.newLines.length; j++) {
-      const isAdded = edit.addedIdx.includes(j);
-      if (!isAdded) continue; // matched lines already emitted from oldLines
-      if (edit.hunk.status === 'rejected') continue; // rejected: new lines vanish
-      push(block, 'added', edit.hunk.newLines[j], edit.hunk.id);
+    // Render the hunk region in true edit-script order: context rows stay in
+    // place, removed rows sit exactly where they were, and added rows appear
+    // at their real insertion position (matching what buildFinalLines writes).
+    for (const op of diffLines(edit.hunk.oldLines, edit.hunk.newLines).ops) {
+      if (op.type === 'context') {
+        push(block, 'context', op.text, edit.hunk.id);
+      } else if (op.type === 'removed') {
+        if (edit.hunk.status === 'accepted') continue; // accepted: old removed lines vanish
+        const kind = edit.hunk.status === 'rejected' ? 'context' : 'removed';
+        push(block, kind, op.text, edit.hunk.id);
+      } else {
+        if (edit.hunk.status === 'rejected') continue; // rejected: new lines vanish
+        push(block, 'added', op.text, edit.hunk.id);
+      }
     }
 
     if (block.lines.length > 0) blocks.push(block);
