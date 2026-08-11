@@ -28,6 +28,20 @@
 code --install-extension err-analyst-0.1.0.vsix
 ```
 
+### 安装 CLI（可选）
+
+VSIX 安装不会自动把命令行工具加入 PATH。如需使用 `erranalyst` 命令，可在仓库根目录运行：
+
+```bash
+./install-cli.sh
+```
+
+脚本会在 `~/.local/bin` 安装一个动态 wrapper，每次执行时自动定位最新安装的扩展目录，因此扩展升级后无需重新运行。卸载命令：
+
+```bash
+./install-cli.sh uninstall
+```
+
 ## 使用
 
 安装后在终端中运行 Python 脚本，报错时会自动进行分析。也可以通过命令面板（`Cmd/Ctrl + Shift + P`）执行以下命令：

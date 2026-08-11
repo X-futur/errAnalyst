@@ -6,13 +6,15 @@
 
 # 源码与构建中间产物
 src/**
+!src/shared/err-store.js
+!src/shared/err-store.d.ts
 test/**
 docs/**
 scripts/**
 out/test/**
 out/**/*.map
 tsconfig.json
-commands.json
+install-cli.sh
 CONTEXT.md
 package-lock.json
 *.log
