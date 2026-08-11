@@ -5,8 +5,12 @@
   "version": "0.1.0",
   "publisher": "errAnalyst",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/X-futur/errAnalyst.git"
+  },
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.96.0"
   },
   "categories": [
     "Programming Languages",
@@ -170,14 +174,16 @@
     "sync:commands": "node scripts/sync-commands.js",
     "compile": "npm run sync:commands && tsc -p ./",
     "watch": "npm run sync:commands && tsc -watch -p ./",
-    "test": "node ./out/test/runTest.js"
+    "test": "node ./out/test/runTest.js",
+    "package": "vsce package"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.0",
     "@types/node": "^20.19.43",
     "@types/prismjs": "^1.26.6",
-    "@types/vscode": "^1.96.0",
+    "@types/vscode": "~1.96.0",
     "@vscode/test-electron": "^3.0.0",
+    "@vscode/vsce": "^3.9.2",
     "eslint": "^8.50.0",
     "glob": "^10.0.0",
     "mocha": "^10.0.0",

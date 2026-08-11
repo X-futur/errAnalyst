@@ -1,0 +1,18 @@
+.git/**
+.gitignore
+.DS_Store
+.vscode/**
+.vscode-test/**
+
+# 源码与构建中间产物
+src/**
+test/**
+docs/**
+scripts/**
+out/test/**
+out/**/*.map
+tsconfig.json
+commands.json
+CONTEXT.md
+package-lock.json
+*.log
