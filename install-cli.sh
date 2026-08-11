@@ -28,7 +28,9 @@ pick_rc() {
 find_extension_dir() {
   local base cand
   for base in "$HOME/.vscode/extensions" "$HOME/.vscode-insiders/extensions" "$HOME/.cursor/extensions"; do
+    shopt -s nocaseglob
     cand="$(ls -dt "$base/errAnalyst.err-analyst-"*/ 2>/dev/null | head -1)"
+    shopt -u nocaseglob
     if [ -n "$cand" ]; then
       printf '%s' "$cand"
       return 0
@@ -43,7 +45,9 @@ write_wrapper() {
 set -euo pipefail
 EXT_DIR=""
 for base in "$HOME/.vscode/extensions" "$HOME/.vscode-insiders/extensions" "$HOME/.cursor/extensions"; do
+  shopt -s nocaseglob
   cand="$(ls -dt "$base/errAnalyst.err-analyst-"*/ 2>/dev/null | head -1)"
+  shopt -u nocaseglob
   if [ -n "$cand" ]; then EXT_DIR="$cand"; break; fi
 done
 if [ -z "$EXT_DIR" ]; then
