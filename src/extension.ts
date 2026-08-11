@@ -654,11 +654,12 @@ async function runFixFlow(): Promise<void> {
     if (hunks.length === 0) {
       vscode.window.showInformationMessage('ErrAnalyst: AI 未生成可应用的修复补丁');
       fixPreviewPanel.close();
+      analysisViewProvider.clearFixState();
       return;
     }
     await fixSessionManager.start(lastError, hunks);
   } catch (e) {
-    analysisViewProvider.showFixError(e instanceof Error ? e.message : String(e));
+    analysisViewProvider.clearFixState();
     fixPreviewPanel.showError(e instanceof Error ? e.message : String(e));
     console.error('ErrAnalyst: fix generation failed', e);
   }
