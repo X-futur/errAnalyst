@@ -2,7 +2,7 @@
   "name": "err-analyst",
   "displayName": "ErrAnalyst - 错误智能分析",
   "description": "智能分析 Python 报错，定位代码位置，AI 翻译错误信息并提供一键修复",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "errAnalyst",
   "license": "MIT",
   "repository": {

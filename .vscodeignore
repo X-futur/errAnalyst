@@ -8,6 +8,8 @@
 src/**
 !src/shared/err-store.js
 !src/shared/err-store.d.ts
+!src/shared/memory-store.js
+!src/shared/memory-store.d.ts
 test/**
 docs/**
 scripts/**
