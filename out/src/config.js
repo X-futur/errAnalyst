@@ -139,6 +139,10 @@ class Config {
         return vscode.workspace.getConfiguration('errAnalyst')
             .get('enableChat', true);
     }
+    getMemoryEnabled() {
+        return vscode.workspace.getConfiguration('errAnalyst')
+            .get('memory.enabled', true);
+    }
 }
 exports.Config = Config;
 //# sourceMappingURL=config.js.map

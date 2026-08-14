@@ -14,6 +14,7 @@ const ERR_DIR = path.join(HOME, '.errAnalyst');
 const CREDENTIALS_FILE = path.join(ERR_DIR, "credentials.json");
 const API_KEY_PREFIX = 'errAnalyst:apiKey:';
 const errStore = require('../src/shared/err-store');
+const memoryStore = require('../src/shared/memory-store');
 const COMMANDS = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'commands.json'), 'utf-8'));
 
 
@@ -315,6 +316,185 @@ async function cmdCacheShow() {
   console.log('='.repeat(60));
 }
 
+// ── Memory config ──
+
+const MEMORY_CATEGORY_LABELS = {
+  fix: '修复偏好',
+  fixSuggestion: '修复建议偏好',
+  analysis: '错误分析偏好',
+};
+
+function memoryRead() {
+  const data = memoryStore.readMemory();
+  if (data && data.format === 'memory-v1' && Array.isArray(data.preferences)) return data;
+  return { format: 'memory-v1', preferences: [], errorStats: {} };
+}
+
+function memoryEnabled() {
+  try {
+    const raw = readSettings();
+    return raw['errAnalyst.memory.enabled'] !== false;
+  } catch {
+    return true;
+  }
+}
+
+function memoryList(data) {
+  if (data.preferences.length === 0) {
+    console.log('  当前没有记忆条目。');
+    return;
+  }
+  data.preferences
+    .slice()
+    .sort((a, b) => (a.status === b.status ? b.lastUsedAt - a.lastUsedAt : a.status === 'active' ? -1 : 1))
+    .forEach((p, i) => {
+      const cat = MEMORY_CATEGORY_LABELS[p.category] || p.category;
+      const src = p.source === 'implicit' ? '行为推断' : '用户声明';
+      const status = p.status === 'candidate' ? ' [待确认]' : '';
+      const conf = p.source === 'implicit' ? ` · 置信 ${Number(p.confidence || 0).toFixed(1)}` : '';
+      console.log(`  ${i + 1}. ${cat} · ${src}${status} · ${p.statement}${conf}`);
+    });
+}
+
+function memoryPickEntry(ask, data) {
+  return new Promise((resolve) => {
+    if (data.preferences.length === 0) {
+      console.log('  当前没有可操作的条目。');
+      resolve(null);
+      return;
+    }
+    console.log('');
+    data.preferences.forEach((p, i) => {
+      const cat = MEMORY_CATEGORY_LABELS[p.category] || p.category;
+      const status = p.status === 'candidate' ? ' [待确认]' : '';
+      console.log(`  ${i + 1}. ${cat}${status} · ${p.statement}`);
+    });
+    ask('\n选择序号 (Enter 取消): ').then((answer) => {
+      const idx = parseInt(answer, 10) - 1;
+      if (isNaN(idx) || idx < 0 || idx >= data.preferences.length) resolve(null);
+      else resolve(data.preferences[idx]);
+    });
+  });
+}
+
+async function cmdMemoryConfig() {
+  const readline = require('readline').createInterface({ input: process.stdin, output: process.stdout });
+  const ask = (q) => new Promise(r => readline.question(q, r));
+  let data = memoryRead();
+
+  while (true) {
+    const enabled = memoryEnabled();
+    const active = data.preferences.filter(p => p.status === 'active').length;
+    const candidates = data.preferences.filter(p => p.status === 'candidate').length;
+    console.log('\n══════════ ErrAnalyst 用户记忆 ══════════');
+    console.log(`状态: ${enabled ? '已开启（参与分析/修复/对话提示词）' : '已关闭（不读取不注入）'}`);
+    console.log(`偏好: ${active} 条生效 · ${candidates} 条待确认`);
+    console.log(`常犯错误: ${Object.keys(data.errorStats).length} 类`);
+    console.log('');
+    console.log('1. 查看记忆条目');
+    console.log('2. 新增偏好（显式声明）');
+    console.log('3. 编辑或删除条目');
+    console.log('4. 确认待确认候选');
+    console.log(`5. ${enabled ? '关闭长期记忆' : '开启长期记忆'}`);
+    console.log('6. 清空全部记忆');
+    console.log('0. 退出');
+    const choice = (await ask('\n选择: ')).trim();
+    if (choice === '0' || choice === '') break;
+
+    if (choice === '1') {
+      memoryList(data);
+    } else if (choice === '2') {
+      console.log('\n类别:');
+      Object.entries(MEMORY_CATEGORY_LABELS).forEach(([label], i) => {
+        console.log(`  ${i + 1}. ${label}`);
+      });
+      const catIdx = parseInt(await ask('\n选择类别: '), 10) - 1;
+      const categories = Object.keys(MEMORY_CATEGORY_LABELS);
+      if (isNaN(catIdx) || catIdx < 0 || catIdx >= categories.length) {
+        console.log('无效选择');
+        continue;
+      }
+      const statement = (await ask('偏好内容（一句话）: ')).trim();
+      if (!statement) { console.log('已取消'); continue; }
+      data.preferences.push({
+        id: `mem-${Date.now()}-${data.preferences.length}`,
+        category: categories[catIdx],
+        statement,
+        source: 'explicit',
+        status: 'active',
+        confidence: 1,
+        createdAt: Date.now(),
+        lastUsedAt: Date.now(),
+        hitCount: 0,
+      });
+      memoryStore.writeMemory(data);
+      console.log(`✓ 已添加 ${MEMORY_CATEGORY_LABELS[categories[catIdx]]}（用户声明，立即生效）`);
+    } else if (choice === '3') {
+      const entry = await memoryPickEntry(ask, data);
+      if (!entry) continue;
+      console.log('\n操作:');
+      console.log('  1. 编辑内容');
+      console.log('  2. 修改类别');
+      console.log('  3. 删除该条目');
+      const op = (await ask('\n选择: ')).trim();
+      if (op === '3') {
+        data.preferences = data.preferences.filter(p => p.id !== entry.id);
+        memoryStore.writeMemory(data);
+        console.log('✓ 已删除条目');
+      } else if (op === '1') {
+        const text = (await ask(`新的内容 (当前: ${entry.statement}): `)).trim();
+        if (!text) { console.log('已取消'); continue; }
+        entry.statement = text;
+        memoryStore.writeMemory(data);
+        console.log('✓ 已更新内容');
+      } else if (op === '2') {
+        console.log('\n类别:');
+        Object.entries(MEMORY_CATEGORY_LABELS).forEach(([key, label], i) => {
+          console.log(`  ${i + 1}. ${label}${key === entry.category ? ' (当前)' : ''}`);
+        });
+        const catIdx = parseInt(await ask('\n选择新类别: '), 10) - 1;
+        const categories = Object.keys(MEMORY_CATEGORY_LABELS);
+        if (isNaN(catIdx) || catIdx < 0 || catIdx >= categories.length) {
+          console.log('无效选择');
+          continue;
+        }
+        entry.category = categories[catIdx];
+        memoryStore.writeMemory(data);
+        console.log('✓ 已更新类别');
+      }
+    } else if (choice === '4') {
+      const candidates = data.preferences.filter(p => p.status === 'candidate');
+      if (candidates.length === 0) {
+        console.log('  当前没有待确认候选。');
+        continue;
+      }
+      console.log('\n待确认候选:');
+      candidates.forEach((p, i) => {
+        console.log(`  ${i + 1}. ${MEMORY_CATEGORY_LABELS[p.category] || p.category} · ${p.statement}（观察 ${p.hitCount || 1} 次）`);
+      });
+      const idx = parseInt(await ask('\n选择要确认的候选 (Enter 取消): '), 10) - 1;
+      if (isNaN(idx) || idx < 0 || idx >= candidates.length) continue;
+      const entry = candidates[idx];
+      entry.status = 'active';
+      entry.confidence = Math.max(0.6, Number(entry.confidence) || 0);
+      memoryStore.writeMemory(data);
+      console.log('✓ 候选已确认，开始生效');
+    } else if (choice === '5') {
+      const raw = readSettings();
+      raw['errAnalyst.memory.enabled'] = !enabled;
+      writeSettings(raw);
+      console.log(enabled ? '✓ 已关闭长期记忆' : '✓ 已开启长期记忆');
+    } else if (choice === '6') {
+      const confirm = (await ask('确定清空全部长期记忆？输入 yes 确认: ')).trim();
+      if (confirm !== 'yes') { console.log('已取消'); continue; }
+      data = { format: 'memory-v1', preferences: [], errorStats: {} };
+      memoryStore.writeMemory(data);
+      console.log('✓ 已清空全部长期记忆');
+    }
+  }
+  readline.close();
+}
+
 function cmdHelp() {
   const cliCommands = COMMANDS
     .filter(c => c.cli)
@@ -346,6 +526,7 @@ const CLI_HANDLERS = {
   'provider set': cmdProviderSet,
   'provider switch': cmdProviderSwitch,
   'model set': cmdModelSet,
+  'memory config': cmdMemoryConfig,
   'help': cmdHelp,
 };
 

@@ -56,6 +56,13 @@
     "availability": "both"
   },
   {
+    "vscodeId": "errAnalyst.memoryConfig",
+    "title": "erranalyst memory config",
+    "cli": "memory config",
+    "description": "查看和管理用户长期记忆（偏好、常犯错误、开关）",
+    "availability": "both"
+  },
+  {
     "vscodeId": null,
     "title": "erranalyst help",
     "cli": "help",
