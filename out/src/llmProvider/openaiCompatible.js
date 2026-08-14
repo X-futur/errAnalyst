@@ -206,11 +206,11 @@ class OpenAICompatibleProvider {
 }
 exports.OpenAICompatibleProvider = OpenAICompatibleProvider;
 // ── Prompt construction ──
-function buildAnalysisPrompts(traceback, category, context) {
+function buildAnalysisPrompts(traceback, category, context, memoryBlock) {
     const categoryVal = category || 'UNKNOWN';
     return {
         systemPrompt: buildSystemPrompt(categoryVal),
-        userPrompt: buildUserPrompt(traceback, categoryVal, context),
+        userPrompt: buildUserPrompt(traceback, categoryVal, context, memoryBlock),
     };
 }
 function buildSystemPrompt(category) {
@@ -230,7 +230,7 @@ ${category === 'UNKNOWN' ? '- category: string（你判断的错误类别，可�
 ${Object.entries(errorTerms_1.ERROR_TERM_TRANSLATIONS).map(([en, cn]) => `${en} → ${cn}`).join('\n')}
 注意：只返回 JSON，不要包含其他文字。`;
 }
-function buildUserPrompt(traceback, category, context) {
+function buildUserPrompt(traceback, category, context, memoryBlock) {
     const lines = [];
     const fullTraceback = traceback.fullTraceback || '';
     const stackFrames = traceback.stackFrames || [];
@@ -327,6 +327,11 @@ function buildUserPrompt(traceback, category, context) {
     }
     else {
         lines.push('_（contextBuilder 未找到任何相关源代码）_');
+        lines.push('');
+    }
+    // ═══ Part 3.5: 用户长期记忆（偏好 + 常犯错误） ═══
+    if (memoryBlock) {
+        lines.push(memoryBlock);
         lines.push('');
     }
     // ═══ Part 4: 分析指令 ═══

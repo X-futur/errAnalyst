@@ -194,11 +194,12 @@ export function buildAnalysisPrompts(
   traceback: ParsedTraceback,
   category?: ErrorCategory,
   context?: BuiltContext,
+  memoryBlock?: string,
 ): { systemPrompt: string; userPrompt: string } {
   const categoryVal = category || 'UNKNOWN';
   return {
     systemPrompt: buildSystemPrompt(categoryVal),
-    userPrompt: buildUserPrompt(traceback, categoryVal, context),
+    userPrompt: buildUserPrompt(traceback, categoryVal, context, memoryBlock),
   };
 }
 
@@ -225,6 +226,7 @@ function buildUserPrompt(
   traceback: ParsedTraceback,
   category: ErrorCategory,
   context?: BuiltContext,
+  memoryBlock?: string,
 ): string {
   const lines: string[] = [];
   const fullTraceback = traceback.fullTraceback || '';
@@ -331,6 +333,12 @@ function buildUserPrompt(
     }
   } else {
     lines.push('_（contextBuilder 未找到任何相关源代码）_');
+    lines.push('');
+  }
+
+  // ═══ Part 3.5: 用户长期记忆（偏好 + 常犯错误） ═══
+  if (memoryBlock) {
+    lines.push(memoryBlock);
     lines.push('');
   }
 

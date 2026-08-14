@@ -11,6 +11,11 @@ export const MAX_HISTORY_CHARS = 12000;
 export class ChatSessionManager {
   private messages: ChatMessage[] = [];
   private context = new ChatContextManager();
+  /** Rolling summary of trimmed-away messages (short-term memory, in-memory only). */
+  private summary: string | null = null;
+  /** Messages dropped by the trim window but not yet summarized. */
+  private pendingDropped: ChatMessage[] = [];
+  private droppedCollectedIds = new Set<string>();
   private sending = false;
   private generatingPatch = false;
   private error: string | null = null;
@@ -20,6 +25,9 @@ export class ChatSessionManager {
 
   startForError(autoFiles: ChatAutoFileInput[]): void {
     this.messages = [];
+    this.summary = null;
+    this.pendingDropped = [];
+    this.droppedCollectedIds.clear();
     this.context.setAutoFiles(autoFiles);
     this.sending = false;
     this.generatingPatch = false;
@@ -35,6 +43,9 @@ export class ChatSessionManager {
 
   newSession(): void {
     this.messages = [];
+    this.summary = null;
+    this.pendingDropped = [];
+    this.droppedCollectedIds.clear();
     this.sending = false;
     this.generatingPatch = false;
     this.error = null;
@@ -129,23 +140,55 @@ export class ChatSessionManager {
       : [...eligible];
     let trimmed = [...list];
     let dropped = false;
+    const droppedMessages: ChatMessage[] = [];
     while (trimmed.length > MAX_HISTORY_MESSAGES) {
-      trimmed.shift();
-      dropped = true;
+      const removed = trimmed.shift();
+      if (removed) {
+        droppedMessages.push(removed);
+        dropped = true;
+      }
     }
     let chars = trimmed.reduce((n, m) => n + m.content.length, 0);
     while (chars > MAX_HISTORY_CHARS && trimmed.length > 0) {
       const removed = trimmed.shift();
       if (removed) {
+        droppedMessages.push(removed);
         chars -= removed.content.length;
         dropped = true;
       }
     }
-    if (dropped && !this.messages.some(m => m.role === 'notice' && m.content === '更早消息已截断')) {
-      this.messages.push(this.makeMessage('notice', '更早消息已截断'));
-      this.emit();
+    if (dropped) {
+      for (const m of droppedMessages) {
+        if (!this.droppedCollectedIds.has(m.id)) {
+          this.droppedCollectedIds.add(m.id);
+          this.pendingDropped.push(m);
+        }
+      }
+      if (!this.messages.some(m => m.role === 'notice' && m.content === '更早消息已截断')) {
+        this.messages.push(this.makeMessage('notice', '更早消息已截断'));
+        this.emit();
+      }
     }
     return trimmed;
+  }
+
+  /** Rolling summary of the current session (null until generated). */
+  getSummary(): string | null {
+    return this.summary;
+  }
+
+  setSummary(summary: string): void {
+    this.summary = summary;
+  }
+
+  /**
+   * Returns and clears the messages that were trimmed away since the last call.
+   * Used to lazily generate the rolling summary after a chat turn.
+   */
+  takePendingDropped(): ChatMessage[] {
+    const batch = this.pendingDropped;
+    this.pendingDropped = [];
+    return batch;
   }
 
   buildContextPayload(): ContextPayload {

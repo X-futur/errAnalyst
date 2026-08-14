@@ -25,10 +25,11 @@ export function buildFixPrompts(
   traceback: ParsedTraceback,
   context?: BuiltContext,
   analysisText?: string,
+  memoryBlock?: string,
 ): FixPrompts {
   return {
     systemPrompt: buildFixSystemPrompt(),
-    userPrompt: buildFixUserPrompt(traceback, context, analysisText),
+    userPrompt: buildFixUserPrompt(traceback, context, analysisText, memoryBlock),
   };
 }
 
@@ -42,10 +43,12 @@ export function buildChatFixPrompts(
   analysisText: string,
   contextPayload: string,
   history: ConversationTurn[],
+  memoryBlock?: string,
+  summary?: string,
 ): FixPrompts {
   return {
     systemPrompt: buildChatFixSystemPrompt(),
-    userPrompt: buildChatFixUserPrompt(traceback, analysisText, contextPayload, history),
+    userPrompt: buildChatFixUserPrompt(traceback, analysisText, contextPayload, history, memoryBlock, summary),
   };
 }
 
@@ -99,6 +102,7 @@ function buildFixUserPrompt(
   traceback: ParsedTraceback,
   context?: BuiltContext,
   analysisText?: string,
+  memoryBlock?: string,
 ): string {
   const lines: string[] = [];
   const fullTraceback = traceback.fullTraceback || '';
@@ -132,6 +136,11 @@ function buildFixUserPrompt(
     lines.push('');
   }
 
+  if (memoryBlock) {
+    lines.push(memoryBlock);
+    lines.push('');
+  }
+
   lines.push('## Instructions');
   lines.push('');
   lines.push('根据上面的报错和相关代码生成修复补丁。');
@@ -148,6 +157,8 @@ function buildChatFixUserPrompt(
   analysisText: string,
   contextPayload: string,
   history: ConversationTurn[],
+  memoryBlock?: string,
+  summary?: string,
 ): string {
   const lines: string[] = [];
   const fullTraceback = traceback.fullTraceback || '';
@@ -188,6 +199,18 @@ function buildChatFixUserPrompt(
       lines.push(label + '：' + turn.content);
       lines.push('');
     }
+  }
+
+  if (summary) {
+    lines.push('## 更早会话摘要');
+    lines.push('');
+    lines.push(summary);
+    lines.push('');
+  }
+
+  if (memoryBlock) {
+    lines.push(memoryBlock);
+    lines.push('');
   }
 
   lines.push('## Instructions');

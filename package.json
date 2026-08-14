@@ -66,6 +66,10 @@
       {
         "command": "errAnalyst.setModel",
         "title": "erranalyst model set"
+      },
+      {
+        "command": "errAnalyst.memoryConfig",
+        "title": "erranalyst memory config"
       }
     ],
     "viewsContainers": {
@@ -165,6 +169,11 @@
           "type": "boolean",
           "default": true,
           "description": "启用修复建议卡片下方的错误分析对话功能"
+        },
+        "errAnalyst.memory.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用用户长期记忆（偏好与常犯错误统计参与分析、修复建议与对话提示词）"
         }
       }
     }

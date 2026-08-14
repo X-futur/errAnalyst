@@ -7,6 +7,7 @@ import { CategoryClassifier } from './diagnostics/categoryClassifier';
 import { ContextBuilder, RUNNING_FILE_SOFT_LIMIT } from './context/contextBuilder';
 import { isProjectFile } from './context/projectFiles';
 import { ErrorMemory } from './storage/errorMemory';
+import { UserMemory } from './storage/userMemory';
 import { TerminalWatcher } from './terminalWatcher';
 import { AnalysisViewProvider, type ChatWebviewAction, type FixWebviewAction } from './ui/analysisWebview';
 import { ErrorHoverProvider } from './ui/hoverProvider';
@@ -20,7 +21,7 @@ import type { BuiltContext, FileContext } from './context/contextBuilder';
 import type { LlmProvider } from './llmProvider/types';
 import type { ErrorAnalysisResult } from './config';
 import { ChatSessionManager } from './chat/session';
-import type { ChatAutoFileInput } from './chat/types';
+import type { ChatAutoFileInput, ChatMessage } from './chat/types';
 import { buildChatMessages } from './chat/prompt';
 import { ConfigWizard } from './ui/configWizard';
 import { ConfigManager } from './configManager';
@@ -40,6 +41,7 @@ let lastError: ErrorAnalysisResult | null = null;
 let configWizard: ConfigWizard;
 let configManager: ConfigManager;
 let fixPreviewPanel: FixPreviewPanel;
+let userMemory: UserMemory;
 
 interface CommandDefinition {
   vscodeId: string | null;
@@ -69,6 +71,9 @@ export function activate(context: vscode.ExtensionContext) {
 
   errorMemory = new ErrorMemory();
   errorMemory.init();
+
+  userMemory = new UserMemory();
+  userMemory.init();
 
   analysisViewProvider = new AnalysisViewProvider(context.extensionUri, {
     onReanalyze: (error) => {
@@ -180,7 +185,7 @@ export function activate(context: vscode.ExtensionContext) {
   // ── Config wizard ──
   configWizard = new ConfigWizard();
   // ── Config manager (CLI-style commands) ──
-  configManager = new ConfigManager(context.secrets);
+  configManager = new ConfigManager(context.secrets, userMemory);
 
   // Auto-open wizard if no valid provider is configured
   (async () => {
@@ -309,6 +314,7 @@ function registerManifestCommands(context: vscode.ExtensionContext): void {
     'errAnalyst.setActiveProvider': () => configManager.setActiveProvider(),
     'errAnalyst.showConfig': () => configManager.showConfig(),
     'errAnalyst.setModel': () => configManager.setModel(),
+    'errAnalyst.memoryConfig': () => configManager.memoryConfig(),
   };
 
   for (const def of manifest) {
@@ -353,8 +359,18 @@ function handleFixAction(action: FixWebviewAction, hunkId?: string): void {
 }
 
 async function finishFixSession(): Promise<void> {
+  const snapshot = fixSessionManager.getSnapshot();
   const result = await fixSessionManager.finish();
   if (result.cancelled) return;
+  if (snapshot && Config.getInstance().getMemoryEnabled()) {
+    const reasons = snapshot.hunks
+      .filter(h => h.status === 'accepted')
+      .map(h => h.reason)
+      .filter(r => !!r && r.trim().length > 0);
+    if (reasons.length > 0) {
+      userMemory.recordAcceptedReasons(reasons);
+    }
+  }
   const parts: string[] = [];
   if (result.written.length > 0) parts.push(`已写入 ${result.written.length} 个文件`);
   if (result.skipped.length > 0) parts.push(`${result.skipped.length} 个文件因外部修改未写入`);
@@ -436,12 +452,17 @@ async function runChatTurn(content: string): Promise<void> {
     const traceback = parsedTracebackFromResult(lastError);
     const payload = chatSessionManager.buildContextPayload();
     const history = chatSessionManager.getLlmHistory(true);
+    const memoryBlock = Config.getInstance().getMemoryEnabled()
+      ? userMemory.buildMemoryBlock(['fix', 'fixSuggestion', 'analysis'], { includeStats: true })
+      : null;
     const messages = buildChatMessages({
       traceback,
       analysisText: analysisTextFromResult(lastError),
       contextPayload: payload.payload,
       history,
       question: text,
+      memoryBlock: memoryBlock || undefined,
+      summary: chatSessionManager.getSummary() || undefined,
     });
     const msgId = chatSessionManager.beginAssistantMessage();
     messageId = msgId;
@@ -492,6 +513,35 @@ async function runChatTurn(content: string): Promise<void> {
   } finally {
     activeChatAbort = null;
     chatSessionManager.setSending(false);
+    const dropped = chatSessionManager.takePendingDropped();
+    if (dropped.length > 0) {
+      void summarizeDroppedChat(llm, dropped);
+    }
+  }
+}
+
+/** Lazily compresses trimmed-away history into the short-term rolling summary. */
+async function summarizeDroppedChat(llm: LlmProvider, dropped: ChatMessage[]): Promise<void> {
+  try {
+    const lines: string[] = [];
+    for (const m of dropped) {
+      lines.push((m.role === 'user' ? '用户：' : '助手：') + m.content);
+    }
+    const response = await llm.chat({
+      messages: [
+        {
+          role: 'system',
+          content: '你是 ErrAnalyst 的会话摘要助手。把下面的对话历史压缩成一段中文摘要，保留：讨论的报错根因、已确认的结论、用户提出的关键约束与偏好、尚未解决的问题。控制在 200 字以内，用短要点列出。',
+        },
+        { role: 'user', content: lines.join('\n') },
+      ],
+      timeout: Config.getInstance().getAiTimeout(),
+    });
+    if (response.success && response.content.trim()) {
+      chatSessionManager.setSummary(response.content.trim());
+    }
+  } catch (e) {
+    console.warn('ErrAnalyst: 会话摘要生成失败（不影响对话）', e);
   }
 }
 
@@ -525,11 +575,16 @@ async function runChatFixFlow(): Promise<void> {
     const traceback = parsedTracebackFromResult(lastError);
     const payload = chatSessionManager.buildContextPayload();
     const history = chatSessionManager.getLlmHistory();
+    const memoryBlock = Config.getInstance().getMemoryEnabled()
+      ? userMemory.buildMemoryBlock(['fix'], { includeStats: false })
+      : null;
     const prompts = buildChatFixPrompts(
       traceback,
       analysisTextFromResult(lastError),
       payload.payload,
       history.filter(m => m.role !== 'notice').map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+      memoryBlock || undefined,
+      chatSessionManager.getSummary() || undefined,
     );
     const response = await llm.analyze({
       systemPrompt: prompts.systemPrompt,
@@ -671,7 +726,10 @@ async function generateFixHunks(
   context: BuiltContext,
   analysisText: string,
 ): Promise<FixHunk[]> {
-  const prompts = buildFixPrompts(traceback, context, analysisText);
+  const memoryBlock = Config.getInstance().getMemoryEnabled()
+    ? userMemory.buildMemoryBlock(['fix'], { includeStats: false })
+    : null;
+  const prompts = buildFixPrompts(traceback, context, analysisText, memoryBlock || undefined);
   console.log('ErrAnalyst: fix userPrompt length =', prompts.userPrompt.length);
   const response = await provider.analyze({
     systemPrompt: prompts.systemPrompt,
@@ -759,10 +817,14 @@ async function autoAnalyze(
     return;
   }
 
+  const memoryBlock = Config.getInstance().getMemoryEnabled()
+    ? userMemory.buildMemoryBlock(['analysis', 'fixSuggestion'], { includeStats: true })
+    : null;
   const prompts = buildAnalysisPrompts(
     parsedTraceback,
     category as any,
     context,
+    memoryBlock || undefined,
   );
 
   // ── Debug: log full prompt ──
@@ -849,6 +911,9 @@ async function autoAnalyze(
   }
 
   errorMemory.cacheResult(result);
+  if (Config.getInstance().getMemoryEnabled()) {
+    userMemory.recordErrorStat(result.errorType);
+  }
 
   // ── Update UI ──
   analysisViewProvider.show(result, {

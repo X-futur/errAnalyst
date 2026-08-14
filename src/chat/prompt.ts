@@ -8,6 +8,10 @@ export interface ChatPromptInput {
   contextPayload: string;
   history: ChatMessage[];
   question: string;
+  /** "## 用户记忆" block from long-term memory (or undefined). */
+  memoryBlock?: string;
+  /** Rolling summary of trimmed-away history (short-term memory). */
+  summary?: string;
 }
 
 export function buildChatSystemPrompt(): string {
@@ -52,6 +56,16 @@ function buildContextMessage(input: ChatPromptInput): string {
   lines.push('');
   lines.push(input.analysisText || '_（暂无，可先点击“重新 AI 分析”）_');
   lines.push('');
+  if (input.summary) {
+    lines.push('## 更早会话摘要');
+    lines.push('');
+    lines.push(input.summary);
+    lines.push('');
+  }
+  if (input.memoryBlock) {
+    lines.push(input.memoryBlock);
+    lines.push('');
+  }
   lines.push('## 对话上下文文件');
   lines.push('');
   lines.push(input.contextPayload || '_（当前没有可用文件）_');

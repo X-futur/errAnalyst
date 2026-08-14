@@ -44,6 +44,7 @@ const categoryClassifier_1 = require("./diagnostics/categoryClassifier");
 const contextBuilder_1 = require("./context/contextBuilder");
 const projectFiles_1 = require("./context/projectFiles");
 const errorMemory_1 = require("./storage/errorMemory");
+const userMemory_1 = require("./storage/userMemory");
 const terminalWatcher_1 = require("./terminalWatcher");
 const analysisWebview_1 = require("./ui/analysisWebview");
 const hoverProvider_1 = require("./ui/hoverProvider");
@@ -70,6 +71,7 @@ let lastError = null;
 let configWizard;
 let configManager;
 let fixPreviewPanel;
+let userMemory;
 function loadCommandManifest(extensionPath) {
     try {
         return JSON.parse(fs.readFileSync(path.join(extensionPath, 'commands.json'), 'utf-8'));
@@ -87,6 +89,8 @@ function activate(context) {
     // ── Init modules ──
     errorMemory = new errorMemory_1.ErrorMemory();
     errorMemory.init();
+    userMemory = new userMemory_1.UserMemory();
+    userMemory.init();
     analysisViewProvider = new analysisWebview_1.AnalysisViewProvider(context.extensionUri, {
         onReanalyze: (error) => {
             fixSessionManager?.end();
@@ -183,7 +187,7 @@ function activate(context) {
     // ── Config wizard ──
     configWizard = new configWizard_1.ConfigWizard();
     // ── Config manager (CLI-style commands) ──
-    configManager = new configManager_1.ConfigManager(context.secrets);
+    configManager = new configManager_1.ConfigManager(context.secrets, userMemory);
     // Auto-open wizard if no valid provider is configured
     (async () => {
         const provider = await config_1.Config.getInstance().getActiveProvider();
@@ -305,6 +309,7 @@ function registerManifestCommands(context) {
         'errAnalyst.setActiveProvider': () => configManager.setActiveProvider(),
         'errAnalyst.showConfig': () => configManager.showConfig(),
         'errAnalyst.setModel': () => configManager.setModel(),
+        'errAnalyst.memoryConfig': () => configManager.memoryConfig(),
     };
     for (const def of manifest) {
         if (!def.vscodeId)
@@ -351,9 +356,19 @@ function handleFixAction(action, hunkId) {
     }
 }
 async function finishFixSession() {
+    const snapshot = fixSessionManager.getSnapshot();
     const result = await fixSessionManager.finish();
     if (result.cancelled)
         return;
+    if (snapshot && config_1.Config.getInstance().getMemoryEnabled()) {
+        const reasons = snapshot.hunks
+            .filter(h => h.status === 'accepted')
+            .map(h => h.reason)
+            .filter(r => !!r && r.trim().length > 0);
+        if (reasons.length > 0) {
+            userMemory.recordAcceptedReasons(reasons);
+        }
+    }
     const parts = [];
     if (result.written.length > 0)
         parts.push(`已写入 ${result.written.length} 个文件`);
@@ -434,12 +449,17 @@ async function runChatTurn(content) {
         const traceback = parsedTracebackFromResult(lastError);
         const payload = chatSessionManager.buildContextPayload();
         const history = chatSessionManager.getLlmHistory(true);
+        const memoryBlock = config_1.Config.getInstance().getMemoryEnabled()
+            ? userMemory.buildMemoryBlock(['fix', 'fixSuggestion', 'analysis'], { includeStats: true })
+            : null;
         const messages = (0, prompt_2.buildChatMessages)({
             traceback,
             analysisText: analysisTextFromResult(lastError),
             contextPayload: payload.payload,
             history,
             question: text,
+            memoryBlock: memoryBlock || undefined,
+            summary: chatSessionManager.getSummary() || undefined,
         });
         const msgId = chatSessionManager.beginAssistantMessage();
         messageId = msgId;
@@ -497,6 +517,35 @@ async function runChatTurn(content) {
     finally {
         activeChatAbort = null;
         chatSessionManager.setSending(false);
+        const dropped = chatSessionManager.takePendingDropped();
+        if (dropped.length > 0) {
+            void summarizeDroppedChat(llm, dropped);
+        }
+    }
+}
+/** Lazily compresses trimmed-away history into the short-term rolling summary. */
+async function summarizeDroppedChat(llm, dropped) {
+    try {
+        const lines = [];
+        for (const m of dropped) {
+            lines.push((m.role === 'user' ? '用户：' : '助手：') + m.content);
+        }
+        const response = await llm.chat({
+            messages: [
+                {
+                    role: 'system',
+                    content: '你是 ErrAnalyst 的会话摘要助手。把下面的对话历史压缩成一段中文摘要，保留：讨论的报错根因、已确认的结论、用户提出的关键约束与偏好、尚未解决的问题。控制在 200 字以内，用短要点列出。',
+                },
+                { role: 'user', content: lines.join('\n') },
+            ],
+            timeout: config_1.Config.getInstance().getAiTimeout(),
+        });
+        if (response.success && response.content.trim()) {
+            chatSessionManager.setSummary(response.content.trim());
+        }
+    }
+    catch (e) {
+        console.warn('ErrAnalyst: 会话摘要生成失败（不影响对话）', e);
     }
 }
 async function runChatFixFlow() {
@@ -528,7 +577,10 @@ async function runChatFixFlow() {
         const traceback = parsedTracebackFromResult(lastError);
         const payload = chatSessionManager.buildContextPayload();
         const history = chatSessionManager.getLlmHistory();
-        const prompts = (0, prompt_1.buildChatFixPrompts)(traceback, analysisTextFromResult(lastError), payload.payload, history.filter(m => m.role !== 'notice').map(m => ({ role: m.role, content: m.content })));
+        const memoryBlock = config_1.Config.getInstance().getMemoryEnabled()
+            ? userMemory.buildMemoryBlock(['fix'], { includeStats: false })
+            : null;
+        const prompts = (0, prompt_1.buildChatFixPrompts)(traceback, analysisTextFromResult(lastError), payload.payload, history.filter(m => m.role !== 'notice').map(m => ({ role: m.role, content: m.content })), memoryBlock || undefined, chatSessionManager.getSummary() || undefined);
         const response = await llm.analyze({
             systemPrompt: prompts.systemPrompt,
             userPrompt: prompts.userPrompt,
@@ -659,7 +711,10 @@ async function runFixFlow() {
     }
 }
 async function generateFixHunks(provider, traceback, context, analysisText) {
-    const prompts = (0, prompt_1.buildFixPrompts)(traceback, context, analysisText);
+    const memoryBlock = config_1.Config.getInstance().getMemoryEnabled()
+        ? userMemory.buildMemoryBlock(['fix'], { includeStats: false })
+        : null;
+    const prompts = (0, prompt_1.buildFixPrompts)(traceback, context, analysisText, memoryBlock || undefined);
     console.log('ErrAnalyst: fix userPrompt length =', prompts.userPrompt.length);
     const response = await provider.analyze({
         systemPrompt: prompts.systemPrompt,
@@ -734,7 +789,10 @@ async function autoAnalyze(result, category, options) {
         analysisViewProvider.showAiError('AI Provider 初始化失败');
         return;
     }
-    const prompts = (0, llmProvider_1.buildAnalysisPrompts)(parsedTraceback, category, context);
+    const memoryBlock = config_1.Config.getInstance().getMemoryEnabled()
+        ? userMemory.buildMemoryBlock(['analysis', 'fixSuggestion'], { includeStats: true })
+        : null;
+    const prompts = (0, llmProvider_1.buildAnalysisPrompts)(parsedTraceback, category, context, memoryBlock || undefined);
     // ── Debug: log full prompt ──
     console.log('\n' + '='.repeat(80));
     console.log('═══ 构建上下文概要 ═══');
@@ -809,6 +867,9 @@ async function autoAnalyze(result, category, options) {
         result.category = parsed.category;
     }
     errorMemory.cacheResult(result);
+    if (config_1.Config.getInstance().getMemoryEnabled()) {
+        userMemory.recordErrorStat(result.errorType);
+    }
     // ── Update UI ──
     analysisViewProvider.show(result, {
         translation: parsed.translation,

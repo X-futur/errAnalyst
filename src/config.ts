@@ -158,4 +158,9 @@ export class Config {
     return vscode.workspace.getConfiguration('errAnalyst')
       .get<boolean>('enableChat', true);
   }
+
+  getMemoryEnabled(): boolean {
+    return vscode.workspace.getConfiguration('errAnalyst')
+      .get<boolean>('memory.enabled', true);
+  }
 }
