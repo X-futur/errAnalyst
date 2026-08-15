@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  The last mile for terminal errors: auto-capture, AI translation, root-cause analysis, and one-click fixes
+  auto-capture terminal errors, AI translation, root-cause analysis, and one-click fixes
 </p>
 
 <p align="center">
@@ -222,11 +222,6 @@ Local data files:
 | `~/.errAnalyst/memory.json` | Long-term memory (preferences and frequent-error stats, participate in analysis) |
 | `~/.errAnalyst/credentials.json` | API key mirror read by the CLI |
 
-## Project Docs
-
-- [CONTEXT.md](CONTEXT.md) — domain glossary (unifies project terminology)
-- [docs/adr](docs/adr) — Architecture Decision Records (ADRs)
-- [docs/design-v1.md](docs/design-v1.md) through [docs/design-v6.md](docs/design-v6.md) — iterative design documents
 
 ## License
 

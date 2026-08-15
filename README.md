@@ -222,11 +222,6 @@ erranalyst help
 | `~/.errAnalyst/memory.json` | 长期记忆（偏好与常犯错误统计，参与自动分析） |
 | `~/.errAnalyst/credentials.json` | 供 CLI 读取的 API Key 镜像 |
 
-## 项目文档
-
-- [CONTEXT.md](CONTEXT.md) — 领域术语表（统一项目内术语）
-- [docs/adr](docs/adr) — 架构决策记录（ADR）
-- [docs/design-v1.md](docs/design-v1.md) 至 [docs/design-v6.md](docs/design-v6.md) — 迭代设计文档
 
 ## 许可证
 
