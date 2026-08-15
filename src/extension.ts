@@ -157,7 +157,25 @@ export function activate(context: vscode.ExtensionContext) {
 
   // ── Terminal watcher ──
 
-  terminalWatcher = new TerminalWatcher(async (result) => {
+  terminalWatcher = new TerminalWatcher(async (result, opts) => {
+    // 升级：流式已分析过同一报错，命令结束时补充退出码/来源，不重复 AI
+    if (opts?.upgrade) {
+      const target = lastError;
+      if (target) {
+        target.exitCode = result.exitCode;
+        target.hasExitCode = result.hasExitCode;
+        target.triggerSource = 'command-end';
+        target.commandLine = result.commandLine || target.commandLine;
+        analysisViewProvider.refresh(true);
+        hoverProvider.showHover(target);
+      } else {
+        lastError = result;
+        analysisViewProvider.refresh(true);
+        hoverProvider.showHover(result);
+      }
+      return;
+    }
+
     fixSessionManager.end();
     lastError = result;
 
@@ -174,12 +192,21 @@ export function activate(context: vscode.ExtensionContext) {
     result.category = category;
 
     // 2. Show analysis panel immediately with parsed data
-    analysisViewProvider.show(result);
+    const quiet = result.triggerSource === 'runtime';
+    analysisViewProvider.show(result, undefined, quiet ? { quiet: true } : undefined);
     chatSessionManager.startForError([]);
     hoverProvider.showHover(result);
 
     // 3. Auto-analyze with AI
-    await autoAnalyze(result, category);
+    await autoAnalyze(result, category, quiet ? { quiet: true } : undefined);
+  }, (occurrence) => {
+    // 冷却期内重复出现：只累计统计，不重复调用 AI
+    if (Config.getInstance().getMemoryEnabled()) {
+      userMemory.recordErrorStat(occurrence.errorType);
+    }
+    if (Config.getInstance().getEnableCache()) {
+      errorMemory.recordOccurrence(occurrence);
+    }
   });
   terminalWatcher.activate();
 
@@ -776,7 +803,7 @@ function collectAllowedFiles(context: BuiltContext, traceback: ParsedTraceback):
 async function autoAnalyze(
   result: ErrorAnalysisResult,
   category: string,
-  options?: { force?: boolean }
+  options?: { force?: boolean; quiet?: boolean }
 ): Promise<void> {
   const config = Config.getInstance();
   const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => f.uri.fsPath);
@@ -826,6 +853,7 @@ async function autoAnalyze(
     category as any,
     context,
     memoryBlock || undefined,
+    { triggerSource: result.triggerSource, recognitionTier: result.recognitionTier },
   );
 
   // ── Debug: log full prompt ──
@@ -919,12 +947,16 @@ async function autoAnalyze(
   }
 
   // ── Update UI ──
-  analysisViewProvider.show(result, {
-    translation: parsed.translation,
-    keywords: parsed.keywords,
-    analysis: parsed.analysis,
-    fixSuggestion: parsed.fixSuggestion,
-  });
+  analysisViewProvider.show(
+    result,
+    {
+      translation: parsed.translation,
+      keywords: parsed.keywords,
+      analysis: parsed.analysis,
+      fixSuggestion: parsed.fixSuggestion,
+    },
+    options?.quiet ? { quiet: true } : undefined,
+  );
   analysisViewProvider.showContext(result.fullTraceback, context);
 
   hoverProvider.showHover(result, {

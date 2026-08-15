@@ -25,7 +25,8 @@
 
 ## 功能特性
 
-- 🎯 **自动捕获报错**：自动捕获终端中的 Python 报错（Traceback），无需手动复制
+- 🎯 **自动捕获报错**：自动捕获终端中的 Python 报错（Traceback）与运行日志报错，无需手动复制
+- 🕰️ **运行时报错捕获**：长驻服务（uvicorn、Flask、脚本常驻）运行期间报错同样自动分析，ERROR/CRITICAL 级日志也能识别；命令结束报错自动展开视图，运行时报错不抢焦点
 - 📎 **自动添加上下文**：自动定位报错对应的代码位置，并将相关上下文一并捕获
 - 🧠 **报错分析**：AI 翻译错误信息、解释报错原因，输出核心报错术语中英对照，同时提供修复建议
 - 🔧 **一键修复**：生成修复补丁与 diff 预览，逐处确认后写入
@@ -54,7 +55,7 @@
 | VS Code | ≥ 1.96.0（扩展声明的最低版本） |
 | Node.js | ≥ 18，建议 20.x LTS（编译、打包与 CLI 均依赖 npm） |
 | Python | ≥ 3.x（触发并分析报错的前置条件，扩展本身不绑定具体 Python 版本） |
-| 终端 Shell 集成 | 开启 VS Code 终端 Shell Integration，否则无法自动捕获报错 |
+| 终端 Shell 集成 | 建议开启 VS Code 终端 Shell Integration：开启后命令输出与运行时报错可完整捕获；未开启时捕获能力受限 |
 | AI 服务 | 任一 OpenAI 兼容 API 的 Base URL 与 API Key（如 DeepSeek / Kimi / Qwen） |
 | 操作系统 | macOS / Linux 可直接使用安装脚本；Windows 下 CLI 脚本需 Git Bash 或 WSL |
 

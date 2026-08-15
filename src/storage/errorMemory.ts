@@ -89,6 +89,19 @@ export class ErrorMemory {
   }
 
   /**
+   * 冷却期内同一报错再次出现时累计次数，不覆盖既有分析内容。
+   * 仅当该错误已有缓存条目时生效。
+   */
+  recordOccurrence(result: ErrorAnalysisResult): void {
+    const errorKey = buildErrorKey(result.errorType, result.stackFrames);
+    const existing = this.cache.get(errorKey);
+    if (!existing) return;
+    existing.count += 1;
+    existing.lastSeen = Date.now();
+    this.persist();
+  }
+
+  /**
    * Get all cached entries (most recent first).
    */
   getAll(): CacheEntry[] {
