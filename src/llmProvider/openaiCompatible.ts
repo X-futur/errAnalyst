@@ -2,7 +2,7 @@ import * as https from 'https';
 import * as http from 'http';
 import { URL } from 'url';
 import { ChatRequest, ChatTurn, LlmRequest, LlmResponse, LlmProvider } from './types';
-import { LlmProviderConfig } from '../config';
+import { ErrorRecognitionTier, ErrorTriggerSource, LlmProviderConfig } from '../config';
 import { ERROR_TERM_TRANSLATIONS, resolveCoreTerm } from '../errorTerms';
 import type { ParsedTraceback, ErrorCategory } from '../parser';
 import type { BuiltContext } from '../context/contextBuilder';
@@ -234,11 +234,15 @@ export function buildAnalysisPrompts(
   category?: ErrorCategory,
   context?: BuiltContext,
   memoryBlock?: string,
+  sourceMeta?: {
+    triggerSource?: ErrorTriggerSource;
+    recognitionTier?: ErrorRecognitionTier;
+  },
 ): { systemPrompt: string; userPrompt: string } {
   const categoryVal = category || 'UNKNOWN';
   return {
     systemPrompt: buildSystemPrompt(categoryVal),
-    userPrompt: buildUserPrompt(traceback, categoryVal, context, memoryBlock),
+    userPrompt: buildUserPrompt(traceback, categoryVal, context, memoryBlock, sourceMeta),
   };
 }
 
@@ -266,6 +270,10 @@ function buildUserPrompt(
   category: ErrorCategory,
   context?: BuiltContext,
   memoryBlock?: string,
+  sourceMeta?: {
+    triggerSource?: ErrorTriggerSource;
+    recognitionTier?: ErrorRecognitionTier;
+  },
 ): string {
   const lines: string[] = [];
   const fullTraceback = traceback.fullTraceback || '';
@@ -314,6 +322,21 @@ function buildUserPrompt(
       }
     }
     lines.push('  [primary] ' + traceback.filePath + ':' + traceback.lineNumber + ' -- ' + traceback.errorType + ': ' + traceback.errorMessage.slice(0, 100));
+    lines.push('');
+  }
+
+  // ═══ Part 2.5: 捕获上下文（触发来源与识别档位） ═══
+  if (sourceMeta?.triggerSource || sourceMeta?.recognitionTier) {
+    lines.push('## Capture Context');
+    lines.push('');
+    if (sourceMeta.triggerSource === 'runtime') {
+      lines.push('触发来源：运行时报错——该报错在服务进程运行期间从终端输出流中捕获，进程可能仍在运行，无退出码语义。请按"服务运行中排查"的角度分析，并说明该错误是否会中断服务。');
+    } else if (sourceMeta.triggerSource === 'command-end') {
+      lines.push('触发来源：命令结束报错——命令以非零状态退出。');
+    }
+    if (sourceMeta.recognitionTier === 'log-line') {
+      lines.push('识别档位：运行日志报错——该报错来自 ERROR/CRITICAL/FATAL 级日志行，无 Traceback 栈帧与文件定位；请结合日志内容与源代码上下文推断根因，若信息不足以定位请明确说明。');
+    }
     lines.push('');
   }
 

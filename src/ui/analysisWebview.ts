@@ -21,6 +21,8 @@ const FILE_PATH_LINK_REGEX = /([A-Za-z0-9_./\\-]+(?:\.(?:py|js|jsx|ts|tsx|mjs|cj
 interface ShowOptions {
   fromCache?: boolean;
   cachedAt?: number;
+  /** 运行时报错：只更新内容与未读角标，不自动展开/聚焦侧边栏。 */
+  quiet?: boolean;
 }
 
 export type FixWebviewAction =
@@ -77,6 +79,9 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
     this.view = webviewView;
     webviewView.webview.options = { enableScripts: true };
     webviewView.webview.onDidReceiveMessage(msg => this.handleWebviewMessage(msg));
+    webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible) this.clearBadge();
+    });
     this.updateContent();
   }
 
@@ -90,11 +95,35 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
     this.fixGenerating = false;
     this.fixError = null;
     if (this.view) {
-      this.view.show(true);
-      this.updateContent();
+      if (options?.quiet) {
+        this.updateContent();
+        if (!this.view.visible) this.setBadge();
+      } else {
+        this.view.show(true);
+        this.updateContent();
+        this.clearBadge();
+      }
     } else {
-      void this.focus();
+      // 视图尚未解析时，quiet 不抢焦点（解析后 resolveWebviewView 会渲染当前错误）
+      if (!options?.quiet) void this.focus();
     }
+  }
+
+  /** 重新渲染当前错误（如升级场景），不改变已持有的 AI 数据。 */
+  refresh(reveal = false): void {
+    if (!this.view) return;
+    if (reveal) this.view.show(true);
+    this.clearBadge();
+    this.updateContent();
+  }
+
+  private setBadge(): void {
+    if (!this.view) return;
+    this.view.badge = { value: 1, tooltip: 'ErrAnalyst：有新的运行时报错' };
+  }
+
+  private clearBadge(): void {
+    if (this.view) this.view.badge = undefined;
   }
 
   focus(): void {
@@ -295,10 +324,23 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
       + `</span>`
       + `</div>`
       + `</div>`
+      + this.buildSourceBadgeHtml()
       + this.buildCategoryHtml()
       + pairHtml
       + (kwPills ? '<div class="keyword-pills">' + kwPills + '</div>' : '')
       + '</div>';
+  }
+
+  private buildSourceBadgeHtml(): string {
+    const error = this.currentError;
+    if (!error) return '';
+    const source = error.triggerSource === 'runtime' ? '运行时报错'
+      : error.triggerSource === 'command-end' ? '命令结束报错' : '';
+    const tier = error.recognitionTier === 'log-line' ? '运行日志报错' : '';
+    const parts = [source, tier].filter(Boolean);
+    if (parts.length === 0) return '';
+    const spans = parts.map(p => `<span>▶ ${this.esc(p)}</span>`).join('');
+    return `<div class="source-badge">${spans}</div>`;
   }
 
   private buildCategoryHtml(): string {
@@ -799,6 +841,8 @@ h3{margin-bottom:8px;font-size:14px;}h4{font-size:11px;text-transform:uppercase;
 .reanalyze-btn:hover{border-color:var(--accent);color:#fff;}
 .category-section{margin-bottom:10px;}
 .category-badge{background:transparent;border-left:3px solid currentColor;border-radius:0;padding:2px 0 2px 8px;font-size:12px;font-weight:600;display:inline-block;margin-bottom:6px;}
+.source-badge{background:transparent;display:flex;gap:12px;flex-wrap:wrap;margin-bottom:6px;font-size:12px;font-weight:600;}
+.source-badge span{color:var(--vscode-descriptionForeground,#808080);}
 .file-context{background:transparent;border:none;border-radius:0;margin-bottom:0;overflow:hidden;}
 .file-context.main-file .file-label{color:var(--accent);}
 .file-row{border-top:1px solid var(--border);padding:6px 0;cursor:pointer;display:flex;align-items:center;gap:6px;user-select:none;font-size:11px;}

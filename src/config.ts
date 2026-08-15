@@ -45,6 +45,12 @@ export interface WizardExistingConfig {
   presets: WizardPresetInfo[];
 }
 
+/** 错误捕获来源：命令结束时捕获 vs 服务运行中捕获。 */
+export type ErrorTriggerSource = 'command-end' | 'runtime';
+
+/** 识别档位：结构化报错 vs 纯日志行报错。 */
+export type ErrorRecognitionTier = 'structured' | 'log-line';
+
 export interface ErrorAnalysisResult {
   // ── From parser ──
   errorType: string;
@@ -58,7 +64,14 @@ export interface ErrorAnalysisResult {
   // ── From categoryClassifier ──
   category?: string;
   firstErrorLine?: string;
+  /** 是否为非零退出：仅命令结束报错有意义；运行时报错为 false。 */
   hasExitCode?: boolean;
+  /** 真实退出码（命令结束报错时存在）。 */
+  exitCode?: number;
+  /** 触发来源：命令结束 vs 运行中。 */
+  triggerSource?: ErrorTriggerSource;
+  /** 识别档位：结构化 vs 日志行。 */
+  recognitionTier?: ErrorRecognitionTier;
   /** Terminal command that launched the run (e.g. `python main.py`). */
   commandLine?: string;
 

@@ -163,7 +163,25 @@ function activate(context) {
     categoryClassifier.loadFromYaml(yamlPath);
     contextBuilder = new contextBuilder_1.ContextBuilder();
     // ── Terminal watcher ──
-    terminalWatcher = new terminalWatcher_1.TerminalWatcher(async (result) => {
+    terminalWatcher = new terminalWatcher_1.TerminalWatcher(async (result, opts) => {
+        // 升级：流式已分析过同一报错，命令结束时补充退出码/来源，不重复 AI
+        if (opts?.upgrade) {
+            const target = lastError;
+            if (target) {
+                target.exitCode = result.exitCode;
+                target.hasExitCode = result.hasExitCode;
+                target.triggerSource = 'command-end';
+                target.commandLine = result.commandLine || target.commandLine;
+                analysisViewProvider.refresh(true);
+                hoverProvider.showHover(target);
+            }
+            else {
+                lastError = result;
+                analysisViewProvider.refresh(true);
+                hoverProvider.showHover(result);
+            }
+            return;
+        }
         fixSessionManager.end();
         lastError = result;
         // 1. Run category classifier
@@ -178,11 +196,20 @@ function activate(context) {
         });
         result.category = category;
         // 2. Show analysis panel immediately with parsed data
-        analysisViewProvider.show(result);
+        const quiet = result.triggerSource === 'runtime';
+        analysisViewProvider.show(result, undefined, quiet ? { quiet: true } : undefined);
         chatSessionManager.startForError([]);
         hoverProvider.showHover(result);
         // 3. Auto-analyze with AI
-        await autoAnalyze(result, category);
+        await autoAnalyze(result, category, quiet ? { quiet: true } : undefined);
+    }, (occurrence) => {
+        // 冷却期内重复出现：只累计统计，不重复调用 AI
+        if (config_1.Config.getInstance().getMemoryEnabled()) {
+            userMemory.recordErrorStat(occurrence.errorType);
+        }
+        if (config_1.Config.getInstance().getEnableCache()) {
+            errorMemory.recordOccurrence(occurrence);
+        }
     });
     terminalWatcher.activate();
     // ── Config wizard ──
@@ -793,7 +820,7 @@ async function autoAnalyze(result, category, options) {
     const memoryBlock = config_1.Config.getInstance().getMemoryEnabled()
         ? userMemory.buildMemoryBlock(['analysis', 'fixSuggestion'], { includeStats: true })
         : null;
-    const prompts = (0, llmProvider_1.buildAnalysisPrompts)(parsedTraceback, category, context, memoryBlock || undefined);
+    const prompts = (0, llmProvider_1.buildAnalysisPrompts)(parsedTraceback, category, context, memoryBlock || undefined, { triggerSource: result.triggerSource, recognitionTier: result.recognitionTier });
     // ── Debug: log full prompt ──
     console.log('\n' + '='.repeat(80));
     console.log('═══ 构建上下文概要 ═══');
@@ -879,7 +906,7 @@ async function autoAnalyze(result, category, options) {
         keywords: parsed.keywords,
         analysis: parsed.analysis,
         fixSuggestion: parsed.fixSuggestion,
-    });
+    }, options?.quiet ? { quiet: true } : undefined);
     analysisViewProvider.showContext(result.fullTraceback, context);
     hoverProvider.showHover(result, {
         translation: parsed.translation,
