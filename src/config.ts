@@ -4,6 +4,9 @@ import * as path from 'path';
 import * as os from 'os';
 import type { StackFrame, ChainEntry } from './parser';
 import { PRESET_PROVIDERS } from './presets';
+import { getModelStatus, getPresetModelList, getRecommendedModel, getDeprecationInfo } from './shared/model-catalog';
+import type { PresetModelStatus, CatalogModel } from './shared/model-catalog';
+import type { CustomModelStatus } from './shared/model-validation';
 
 export interface LlmProviderConfig {
   name: string;
@@ -11,6 +14,8 @@ export interface LlmProviderConfig {
   model: string;
   apiKey: string;
   enabled: boolean;
+  /** 自定义提供商的模型来源状态（预置提供商无需持久化）。 */
+  modelStatus?: CustomModelStatus;
 }
 
 export interface WizardProviderEntry {
@@ -18,12 +23,26 @@ export interface WizardProviderEntry {
   baseUrl: string;
   model: string;
   hasApiKey: boolean;
+  modelStatus?: CustomModelStatus;
+  /** 预置提供商按官方模型列表判定的状态。 */
+  presetModelStatus?: PresetModelStatus;
+}
+
+export interface WizardPresetInfo {
+  name: string;
+  baseUrl: string;
+  icon: string;
+  description: string;
+  recommendedModel: string;
+  models: CatalogModel[];
 }
 
 export interface WizardExistingConfig {
   activeProvider: string | null;
   providers: WizardProviderEntry[];
   enableCache: boolean;
+  /** 预置提供商及其官方模型列表，配置向导据此渲染模型下拉。 */
+  presets: WizardPresetInfo[];
 }
 
 export interface ErrorAnalysisResult {
@@ -61,6 +80,7 @@ export interface KeywordPair {
 export class Config {
   private static instance: Config;
   private secrets?: vscode.SecretStorage;
+  private warnedModels = new Set<string>();
 
   static getInstance(): Config {
     if (!Config.instance) {
@@ -91,8 +111,22 @@ export class Config {
         baseUrl: p.baseUrl,
         model: p.model,
         hasApiKey: !!existence[p.name],
+        modelStatus: p.modelStatus,
+        presetModelStatus: getPresetModelList(p.name).length > 0
+          ? getModelStatus(p.name, p.model)
+          : undefined,
       })),
       enableCache: this.getEnableCache(),
+      presets: PRESET_PROVIDERS
+        .filter(p => p.name !== '自定义')
+        .map(p => ({
+          name: p.name,
+          baseUrl: p.baseUrl,
+          icon: p.icon,
+          description: p.description,
+          recommendedModel: getRecommendedModel(p.name),
+          models: getPresetModelList(p.name),
+        })),
     };
   }
 
@@ -121,6 +155,7 @@ export class Config {
       if (p.name === activeName && p.enabled) {
         const apiKey = await this.getApiKey(p.name);
         if (apiKey) {
+          this.warnInvalidPresetModel(p);
           return { ...p, apiKey };
         }
       }
@@ -128,8 +163,30 @@ export class Config {
     return undefined;
   }
 
+  /** 读取时校验：预置提供商模型不在官方列表/已下线时，警告一次但不阻断分析。 */
+  private warnInvalidPresetModel(p: LlmProviderConfig): void {
+    if (getPresetModelList(p.name).length === 0) return;
+    const key = `${p.name}:${p.model}`;
+    if (this.warnedModels.has(key)) return;
+    this.warnedModels.add(key);
+    const status = getModelStatus(p.name, p.model);
+    if (status === 'valid') return;
+    if (status === 'deprecated') {
+      const info = getDeprecationInfo(p.name, p.model);
+      void vscode.window.showWarningMessage(
+        `ErrAnalyst: 模型 ${p.model} 已下线/即将下线${info?.deprecatedAt ? `（${info.deprecatedAt}）` : ''}` +
+        `${info?.migrateTo ? `，建议迁移到 ${info.migrateTo}` : ''}。可在配置向导或 erranalyst provider set 中修改。`
+      );
+      return;
+    }
+    void vscode.window.showWarningMessage(
+      `ErrAnalyst: 模型 "${p.model}" 不在 ${p.name} 官方模型列表，可能写错或已下线。` +
+      `可用配置向导或 erranalyst provider set 修正，或改用自定义提供商。`
+    );
+  }
+
   async saveProviderConfig(
-    provider: { name: string; baseUrl: string; model: string },
+    provider: { name: string; baseUrl: string; model: string; modelStatus?: CustomModelStatus },
     apiKey: string | null,
     prefs: { enableCache: boolean },
     activeProvider: string
@@ -147,6 +204,7 @@ export class Config {
       model: provider.model,
       apiKey: '',
       enabled: true,
+      modelStatus: provider.modelStatus,
     };
     if (existingIdx >= 0) {
       providers[existingIdx] = { ...providers[existingIdx], ...entry };
@@ -170,6 +228,7 @@ export class Config {
       baseUrl: string;
       model: string;
       apiKey: string | null;
+      modelStatus?: CustomModelStatus;
       /** 加载时的原始名称；改名且未输入新 Key 时，把旧名称下的 Key 迁移过来。 */
       originalName?: string;
     }>,
@@ -198,6 +257,7 @@ export class Config {
           model: entry.model,
           apiKey: '',
           enabled: p.enabled,
+          modelStatus: entry.modelStatus,
         });
       }
     }
@@ -210,6 +270,7 @@ export class Config {
           model: entry.model,
           apiKey: '',
           enabled: true,
+          modelStatus: entry.modelStatus,
         });
         existingNames.add(entry.name);
       }

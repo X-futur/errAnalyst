@@ -1,3 +1,5 @@
+import { getPresetProviders, getRecommendedModel } from './shared/model-catalog';
+
 export interface ProviderPreset {
   name: string;
   baseUrl: string;
@@ -6,9 +8,19 @@ export interface ProviderPreset {
   description: string;
 }
 
+const PRESET_META: Record<string, { icon: string; description: string }> = {
+  'DeepSeek': { icon: '🔵', description: '性价比高的通用模型' },
+  'Kimi (Moonshot)': { icon: '🟣', description: '长上下文推理能力强' },
+  'Qwen (通义千问)': { icon: '🟠', description: '阿里云通义千问大模型' },
+};
+
 export const PRESET_PROVIDERS: ProviderPreset[] = [
-  { name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', icon: '🔵', description: '性价比高的通用模型' },
-  { name: 'Kimi (Moonshot)', baseUrl: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-8k', icon: '🟣', description: '长上下文推理能力强' },
-  { name: 'Qwen (通义千问)', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-turbo', icon: '🟠', description: '阿里云通义千问大模型' },
+  ...getPresetProviders().map((p) => ({
+    name: p.name,
+    baseUrl: p.baseUrl,
+    model: getRecommendedModel(p.name),
+    icon: PRESET_META[p.name]?.icon || '🔮',
+    description: PRESET_META[p.name]?.description || '',
+  })),
   { name: '自定义', baseUrl: '', model: '', icon: '⚙️', description: '接入任意 OpenAI 兼容 API' },
 ];

@@ -1,0 +1,143 @@
+{
+  "version": 1,
+  "updatedAt": "2026-08-15",
+  "sources": {
+    "DeepSeek": "https://api-docs.deepseek.com/quick_start/pricing",
+    "Kimi (Moonshot)": "https://platform.kimi.com/docs/models",
+    "Qwen (通义千问)": "https://help.aliyun.com/zh/model-studio/models"
+  },
+  "providers": {
+    "DeepSeek": {
+      "baseUrl": "https://api.deepseek.com",
+      "models": [
+        {
+          "id": "deepseek-v4-flash",
+          "tier": "fast",
+          "recommended": true,
+          "description": "速度优先的通用模型，支持非思考与思考模式"
+        },
+        {
+          "id": "deepseek-v4-pro",
+          "tier": "strong",
+          "recommended": false,
+          "description": "推理能力更强，速度较慢"
+        },
+        {
+          "id": "deepseek-chat",
+          "tier": "fast",
+          "recommended": false,
+          "deprecated": true,
+          "deprecatedAt": "2026-07-24",
+          "migrateTo": "deepseek-v4-flash",
+          "description": "已退役别名，请迁移到 deepseek-v4-flash"
+        },
+        {
+          "id": "deepseek-reasoner",
+          "tier": "strong",
+          "recommended": false,
+          "deprecated": true,
+          "deprecatedAt": "2026-07-24",
+          "migrateTo": "deepseek-v4-pro",
+          "description": "已退役别名，请迁移到 deepseek-v4-pro"
+        }
+      ]
+    },
+    "Kimi (Moonshot)": {
+      "baseUrl": "https://api.moonshot.cn/v1",
+      "models": [
+        {
+          "id": "kimi-k2.7-code-highspeed",
+          "tier": "fast",
+          "recommended": true,
+          "description": "高速编码模型，输出约 180-260 tokens/s"
+        },
+        {
+          "id": "kimi-k3",
+          "tier": "strong",
+          "recommended": false,
+          "description": "旗舰模型，100 万 token 上下文，原生支持视觉理解"
+        },
+        {
+          "id": "kimi-k2.7-code",
+          "tier": "balanced",
+          "recommended": false,
+          "description": "编码模型，长上下文中指令遵循更可靠，256k"
+        },
+        {
+          "id": "kimi-k2.6",
+          "tier": "balanced",
+          "recommended": false,
+          "description": "256k 上下文，支持视觉与思考/非思考模式"
+        },
+        {
+          "id": "moonshot-v1-8k",
+          "tier": "fast",
+          "recommended": false,
+          "deprecated": true,
+          "deprecatedAt": "2026-08-31",
+          "migrateTo": "kimi-k2.7-code-highspeed",
+          "description": "即将下线（2026-08-31），请迁移到新模型"
+        },
+        {
+          "id": "moonshot-v1-32k",
+          "tier": "balanced",
+          "recommended": false,
+          "deprecated": true,
+          "deprecatedAt": "2026-08-31",
+          "migrateTo": "kimi-k2.7-code-highspeed",
+          "description": "即将下线（2026-08-31），请迁移到新模型"
+        },
+        {
+          "id": "moonshot-v1-128k",
+          "tier": "balanced",
+          "recommended": false,
+          "deprecated": true,
+          "deprecatedAt": "2026-08-31",
+          "migrateTo": "kimi-k2.7-code-highspeed",
+          "description": "即将下线（2026-08-31），请迁移到新模型"
+        },
+        {
+          "id": "kimi-k2.5",
+          "tier": "balanced",
+          "recommended": false,
+          "deprecated": true,
+          "deprecatedAt": "2026-08-31",
+          "migrateTo": "kimi-k3",
+          "description": "即将下线（2026-08-31），请迁移到新模型"
+        }
+      ]
+    },
+    "Qwen (通义千问)": {
+      "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "models": [
+        {
+          "id": "qwen3.7-flash",
+          "tier": "fast",
+          "recommended": true,
+          "description": "速度优先的文本生成模型"
+        },
+        {
+          "id": "qwen3.7-plus",
+          "tier": "balanced",
+          "recommended": false,
+          "description": "均衡的文本生成模型"
+        },
+        {
+          "id": "qwen3.8-max",
+          "tier": "strong",
+          "recommended": false,
+          "description": "能力最强的文本生成模型"
+        },
+        {
+          "id": "qwen-turbo",
+          "tier": "fast",
+          "recommended": false,
+          "deprecated": true,
+          "deprecatedAt": "2026-08-15",
+          "migrateTo": "qwen3.7-flash",
+          "description": "已停止服务，请迁移到 qwen3.7-flash"
+        }
+      ]
+    }
+  }
+}

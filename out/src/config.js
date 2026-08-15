@@ -39,7 +39,11 @@ const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const os = __importStar(require("os"));
 const presets_1 = require("./presets");
+const model_catalog_1 = require("./shared/model-catalog");
 class Config {
+    constructor() {
+        this.warnedModels = new Set();
+    }
     static getInstance() {
         if (!Config.instance) {
             Config.instance = new Config();
@@ -66,8 +70,22 @@ class Config {
                 baseUrl: p.baseUrl,
                 model: p.model,
                 hasApiKey: !!existence[p.name],
+                modelStatus: p.modelStatus,
+                presetModelStatus: (0, model_catalog_1.getPresetModelList)(p.name).length > 0
+                    ? (0, model_catalog_1.getModelStatus)(p.name, p.model)
+                    : undefined,
             })),
             enableCache: this.getEnableCache(),
+            presets: presets_1.PRESET_PROVIDERS
+                .filter(p => p.name !== '自定义')
+                .map(p => ({
+                name: p.name,
+                baseUrl: p.baseUrl,
+                icon: p.icon,
+                description: p.description,
+                recommendedModel: (0, model_catalog_1.getRecommendedModel)(p.name),
+                models: (0, model_catalog_1.getPresetModelList)(p.name),
+            })),
         };
     }
     /** 读取某个提供商的真实 API Key（SecretStorage 优先，回退 CLI 凭据文件）；仅后端使用，不下发 webview。 */
@@ -94,11 +112,32 @@ class Config {
             if (p.name === activeName && p.enabled) {
                 const apiKey = await this.getApiKey(p.name);
                 if (apiKey) {
+                    this.warnInvalidPresetModel(p);
                     return { ...p, apiKey };
                 }
             }
         }
         return undefined;
+    }
+    /** 读取时校验：预置提供商模型不在官方列表/已下线时，警告一次但不阻断分析。 */
+    warnInvalidPresetModel(p) {
+        if ((0, model_catalog_1.getPresetModelList)(p.name).length === 0)
+            return;
+        const key = `${p.name}:${p.model}`;
+        if (this.warnedModels.has(key))
+            return;
+        this.warnedModels.add(key);
+        const status = (0, model_catalog_1.getModelStatus)(p.name, p.model);
+        if (status === 'valid')
+            return;
+        if (status === 'deprecated') {
+            const info = (0, model_catalog_1.getDeprecationInfo)(p.name, p.model);
+            void vscode.window.showWarningMessage(`ErrAnalyst: 模型 ${p.model} 已下线/即将下线${info?.deprecatedAt ? `（${info.deprecatedAt}）` : ''}` +
+                `${info?.migrateTo ? `，建议迁移到 ${info.migrateTo}` : ''}。可在配置向导或 erranalyst provider set 中修改。`);
+            return;
+        }
+        void vscode.window.showWarningMessage(`ErrAnalyst: 模型 "${p.model}" 不在 ${p.name} 官方模型列表，可能写错或已下线。` +
+            `可用配置向导或 erranalyst provider set 修正，或改用自定义提供商。`);
     }
     async saveProviderConfig(provider, apiKey, prefs, activeProvider) {
         const config = vscode.workspace.getConfiguration('errAnalyst');
@@ -114,6 +153,7 @@ class Config {
             model: provider.model,
             apiKey: '',
             enabled: true,
+            modelStatus: provider.modelStatus,
         };
         if (existingIdx >= 0) {
             providers[existingIdx] = { ...providers[existingIdx], ...entry };
@@ -150,6 +190,7 @@ class Config {
                     model: entry.model,
                     apiKey: '',
                     enabled: p.enabled,
+                    modelStatus: entry.modelStatus,
                 });
             }
         }
@@ -162,6 +203,7 @@ class Config {
                     model: entry.model,
                     apiKey: '',
                     enabled: true,
+                    modelStatus: entry.modelStatus,
                 });
                 existingNames.add(entry.name);
             }

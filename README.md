@@ -172,9 +172,11 @@ erranalyst help
 
 首次使用需要配置 AI 提供商（`errAnalyst.providers`）和 API Key，可运行 `erranalyst provider set` 或通过配置向导完成。默认内置 DeepSeek、Kimi、Qwen 三个预设。
 
+模型名称的唯一合法来源是各提供商的官方模型列表：预置提供商只能从官方列表中选择（速度最快的推荐模型置顶、默认选中），列表外名称在写入时会被拒绝并引导改用自定义提供商；自定义提供商保存时实时抓取官方 `/models` 列表校验，抓取失败则回退连接测试，未命中或未校验的模型会带明确标注（非官方模型 / 未通过官方列表校验）。存量配置中已下线或不在列表的模型，会在分析时警告（不阻断分析），并在 `erranalyst config show` 中标注。
+
 | 设置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `errAnalyst.providers` | 三个预设 | AI 提供商列表（Base URL / Model / API Key） |
+| `errAnalyst.providers` | 三个预设 | AI 提供商列表（Base URL / Model / API Key / 模型来源状态） |
 | `errAnalyst.activeProvider` | `DeepSeek` | 当前使用的提供商 |
 | `errAnalyst.enableCache` | `true` | 保存错误历史（仅作历史查阅，不参与自动分析） |
 | `errAnalyst.aiTimeout` | `15000` | AI 请求超时（毫秒） |

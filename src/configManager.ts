@@ -2,6 +2,14 @@ import * as vscode from 'vscode';
 import { Config } from './config';
 import { PRESET_PROVIDERS } from './presets';
 import {
+  getActiveModels,
+  getModelStatus,
+  getPresetModelList,
+  getRecommendedModel,
+} from './shared/model-catalog';
+import { validateCustomModel, modelStatusLabel } from './shared/model-validation';
+import type { CustomModelStatus } from './shared/model-validation';
+import {
   UserMemory,
   CATEGORY_LABELS,
   CATEGORY_OPTIONS,
@@ -79,7 +87,7 @@ export class ConfigManager {
       if (preset) {
         name = preset.name;
         baseUrl = preset.baseUrl;
-        model = preset.model;
+        model = getRecommendedModel(name);
       } else {
         // Custom provider
         const inputName = await vscode.window.showInputBox({
@@ -129,19 +137,24 @@ export class ConfigManager {
       return;
     }
 
-    // Model override (for existing providers)
-    if (!selected.label.startsWith('➕ ')) {
-      const modelInput = await vscode.window.showInputBox({
-        prompt: `输入 ${name} 的模型名称（留空则保持不变）`,
-        value: model,
-        placeHolder: 'model-name',
-      });
-      if (modelInput === undefined) return;
-      if (modelInput.trim()) model = modelInput.trim();
+    // Model 选择：预置提供商从官方列表选（推荐置顶）；自定义提供商手动输入后校验。
+    let modelStatus: CustomModelStatus | undefined;
+    const isPreset = getPresetModelList(name).length > 0;
+    if (isPreset) {
+      const picked = await this.pickPresetModel(name, model);
+      if (picked === null) {
+        if (!this.isValidPresetModel(name, model)) return;
+      } else {
+        model = picked;
+      }
+    } else {
+      const validation = await this.validateCustomModelInput(name, baseUrl, model, finalKey);
+      if (!validation) return;
+      modelStatus = validation.status;
     }
 
     await Config.getInstance().saveProviderConfig(
-      { name, baseUrl, model },
+      { name, baseUrl, model, modelStatus },
       finalKey,
       { enableCache: Config.getInstance().getEnableCache() },
       name,
@@ -205,6 +218,15 @@ export class ConfigManager {
 
     for (const p of providers) {
       const apiKey = await this.secrets.get(`errAnalyst:apiKey:${p.name}`);
+      const isPreset = getPresetModelList(p.name).length > 0;
+      const presetStatus = isPreset ? getModelStatus(p.name, p.model) : null;
+      const statusLabel = isPreset
+        ? (presetStatus === 'valid'
+            ? '官方模型'
+            : presetStatus === 'deprecated'
+              ? '已下线/即将下线'
+              : '无效模型（不在官方列表）')
+        : (p.modelStatus ? modelStatusLabel(p.modelStatus) : '未校验');
       output.providers.push({
         name: p.name,
         baseUrl: p.baseUrl,
@@ -212,6 +234,7 @@ export class ConfigManager {
         apiKey: apiKey ? this.maskApiKey(apiKey) : '(未设置)',
         enabled: p.enabled,
         isActive: p.name === activeProvider,
+        modelStatus: statusLabel,
       });
     }
 
@@ -242,19 +265,44 @@ export class ConfigManager {
     });
     if (!selected) return;
 
-    const currentModel = providers.find(p => p.name === selected.label)?.model || '';
-    const model = await vscode.window.showInputBox({
-      prompt: `输入 ${selected.label} 的新模型名称`,
-      value: currentModel,
-      placeHolder: 'model-name',
-      validateInput: (v) => v.trim() ? null : '模型名称不能为空',
-    });
-    if (!model) return;
+    const provider = providers.find(p => p.name === selected.label);
+    if (!provider) return;
+    const currentModel = provider.model || '';
+    const isPreset = getPresetModelList(provider.name).length > 0;
+    let model: string;
+    let modelStatus: CustomModelStatus | undefined;
+
+    if (isPreset) {
+      const picked = await this.pickPresetModel(provider.name, currentModel);
+      if (picked === null) {
+        if (!this.isValidPresetModel(provider.name, currentModel)) return;
+        model = currentModel;
+      } else {
+        model = picked;
+      }
+    } else {
+      const input = await vscode.window.showInputBox({
+        prompt: `输入 ${provider.name} 的新模型名称`,
+        value: currentModel,
+        placeHolder: 'model-name',
+        validateInput: (v) => v.trim() ? null : '模型名称不能为空',
+      });
+      if (!input) return;
+      model = input.trim();
+      const apiKey = await Config.getInstance().getApiKey(provider.name);
+      const validation = await this.validateCustomModelInput(provider.name, provider.baseUrl, model, apiKey);
+      if (!validation) return;
+      modelStatus = validation.status;
+    }
 
     const allProviders = Config.getInstance().getProviders();
     const idx = allProviders.findIndex(p => p.name === selected.label);
     if (idx >= 0) {
-      allProviders[idx] = { ...allProviders[idx], model };
+      allProviders[idx] = {
+        ...allProviders[idx],
+        model,
+        ...(modelStatus ? { modelStatus } : {}),
+      };
       await vscode.workspace.getConfiguration('errAnalyst')
         .update('providers', allProviders, vscode.ConfigurationTarget.Global);
       vscode.window.showInformationMessage(`✅ 已更新 ${selected.label} 的模型: ${model}`);
@@ -399,6 +447,77 @@ export class ConfigManager {
     if (!selected) return;
     this.userMemory.confirmCandidate(selected.id);
     vscode.window.showInformationMessage('候选已确认，开始生效');
+  }
+
+  // ── Private: 模型选择与校验 ──
+
+  private isValidPresetModel(providerName: string, model: string): boolean {
+    return getModelStatus(providerName, model) === 'valid';
+  }
+
+  /** 预置提供商模型选择：官方列表内 QuickPick，推荐模型置顶；返回 null 表示取消。 */
+  private async pickPresetModel(
+    providerName: string,
+    currentModel: string
+  ): Promise<string | null> {
+    const models = getActiveModels(providerName);
+    if (models.length === 0) return null;
+    const currentValid = models.some(m => m.id === currentModel);
+    const tierLabels: Record<string, string> = { fast: '⚡ 快速', balanced: '均衡', strong: '更强' };
+    const choices = models
+      .slice()
+      .sort((a, b) => Number(b.recommended) - Number(a.recommended))
+      .map(m => {
+        const label = (m.recommended ? '⚡ 推荐 · ' : '') + m.id + (m.id === currentModel ? '  (当前)' : '');
+        return {
+          id: m.id,
+          item: {
+            label,
+            description: tierLabels[m.tier] || '',
+            detail: m.description,
+            picked: m.id === currentModel,
+          } as vscode.QuickPickItem,
+        };
+      });
+    const picked = await vscode.window.showQuickPick(choices.map(c => c.item), {
+      placeHolder: currentValid
+        ? `为 ${providerName} 选择模型（推荐：${getRecommendedModel(providerName)}）`
+        : `当前模型 ${currentModel} 不在官方模型列表，请重新选择`,
+      matchOnDescription: true,
+    });
+    if (!picked) return null;
+    return choices.find(c => c.item === picked)?.id ?? null;
+  }
+
+  /** 自定义提供商模型校验：抓取 /models，失败回退连接测试；非官方模型需用户确认。返回 null 表示取消/失败。 */
+  private async validateCustomModelInput(
+    name: string,
+    baseUrl: string,
+    model: string,
+    apiKey: string | undefined
+  ): Promise<{ status: CustomModelStatus } | null> {
+    if (!apiKey) {
+      vscode.window.showErrorMessage(`无法校验 ${name} 的模型：缺少 API Key`);
+      return null;
+    }
+    const result = await validateCustomModel(baseUrl, model, apiKey);
+    if (!result.ok) {
+      vscode.window.showErrorMessage(`模型校验失败：${result.error}`);
+      return null;
+    }
+    if (result.status === 'unofficial') {
+      const confirm = await vscode.window.showWarningMessage(
+        `模型 "${model}" 不在 ${name} 的官方模型列表，仍要保存？将标记为非官方模型。`,
+        { modal: true },
+        '仍要保存'
+      );
+      if (confirm !== '仍要保存') return null;
+    } else if (result.status === 'unverified') {
+      vscode.window.showWarningMessage(
+        `无法获取 ${name} 的官方模型列表，已通过连接测试；模型将标记为"未通过官方列表校验"。`
+      );
+    }
+    return { status: result.status };
   }
 
   // ── Private ──

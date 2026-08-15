@@ -3,6 +3,7 @@ import * as https from 'https';
 import * as http from 'http';
 import { URL } from 'url';
 import { Config, WizardExistingConfig } from '../config';
+import { validateCustomModel } from '../shared/model-validation';
 
 export class ConfigWizard {
   private panel: vscode.WebviewPanel | null = null;
@@ -49,6 +50,7 @@ export class ConfigWizard {
             activeProvider: null,
             providers: [],
             enableCache: true,
+            presets: [],
           },
         });
       }
@@ -114,6 +116,7 @@ export class ConfigWizard {
   ): Promise<void> {
     try {
       if (data.kind === 'preset') {
+        // 预置提供商：模型来自官方列表下拉，写入即合法。
         await Config.getInstance().saveProviderConfig(
           data.provider,
           data.apiKey || null,
@@ -121,8 +124,54 @@ export class ConfigWizard {
           data.activeProvider
         );
       } else {
+        // 自定义提供商：逐条抓取官方模型列表校验，失败回退连接测试。
+        const validated: Array<{
+          name: string;
+          baseUrl: string;
+          model: string;
+          apiKey: string | null;
+          originalName?: string;
+          modelStatus?: 'official' | 'unofficial' | 'unverified';
+        }> = [];
+        const unofficial: string[] = [];
+        let hardError: string | null = null;
+        for (const entry of data.providers) {
+          let apiKey = entry.apiKey || '';
+          if (!apiKey && entry.name) {
+            apiKey = (await Config.getInstance().getApiKey(entry.name)) || '';
+          }
+          if (!apiKey) {
+            hardError = `${entry.name || '未命名提供商'}: 缺少 API Key，无法校验模型`;
+            break;
+          }
+          const result = await validateCustomModel(entry.baseUrl, entry.model, apiKey);
+          if (!result.ok) {
+            hardError = `${entry.name || '未命名提供商'}: ${result.error}`;
+            break;
+          }
+          if (result.status === 'unofficial') unofficial.push(entry.name);
+          validated.push({ ...entry, modelStatus: result.status });
+        }
+        if (hardError) {
+          this.panel?.webview.postMessage({ type: 'saveError', data: { error: hardError } });
+          return;
+        }
+        if (unofficial.length > 0) {
+          const confirm = await vscode.window.showWarningMessage(
+            `以下提供商的模型不在官方模型列表：${unofficial.join('、')}。仍要保存？将标记为非官方模型。`,
+            { modal: true },
+            '仍要保存'
+          );
+          if (confirm !== '仍要保存') {
+            this.panel?.webview.postMessage({
+              type: 'saveError',
+              data: { error: '已取消保存：部分模型不在官方模型列表' },
+            });
+            return;
+          }
+        }
         await Config.getInstance().saveCustomProviders(
-          data.providers,
+          validated,
           data.activeProvider,
           { enableCache: data.enableCache }
         );
@@ -252,6 +301,9 @@ h3{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text-bright)}
 .field input{width:100%;padding:6px 10px;font-size:13px;font-family:Consolas,Monaco,monospace;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text);outline:none;transition:border-color .15s}
 .field input:focus{border-color:var(--accent)}
 .field input:disabled{opacity:.5;cursor:not-allowed}
+.field select{width:100%;padding:6px 10px;font-size:13px;font-family:Consolas,Monaco,monospace;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text);outline:none;cursor:pointer}
+.field select:focus{border-color:var(--accent)}
+.field select:disabled{opacity:.5;cursor:not-allowed}
 .input-with-button{display:flex;gap:6px}
 .input-with-button input{flex:1}
 .input-with-button button{padding:6px 10px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:pointer;font-size:14px;transition:background .15s}
@@ -343,9 +395,9 @@ h3{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text-bright)}
       <div class="field-hint" id="key-hint"></div>
     </div>
     <div class="field">
-      <label>Model <span class="field-hint" id="model-hint">(使用默认值)</span></label>
-      <input type="text" id="model-input" />
-      <div class="field-error" id="model-error">请填入 Model</div>
+      <label>Model <span class="field-hint" id="model-hint">(官方模型列表，推荐置顶)</span></label>
+      <select id="model-input"></select>
+      <div class="field-error" id="model-error">请选择官方模型列表内的模型</div>
     </div>
     <div class="field">
       <label>Base URL</label>
@@ -395,13 +447,9 @@ h3{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text-bright)}
 (function() {
   const vscode = acquireVsCodeApi();
   const MASK = '●●●●●●●●';
-  const PRESETS = [
-    { name: 'DeepSeek',        baseUrl: 'https://api.deepseek.com',                        model: 'deepseek-v4-flash', icon: '🔵', desc: '性价比高的通用模型' },
-    { name: 'Kimi (Moonshot)', baseUrl: 'https://api.moonshot.cn/v1',                         model: 'moonshot-v1-8k',  icon: '🟣', desc: '长上下文推理能力强' },
-    { name: 'Qwen (通义千问)', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-turbo',      icon: '🟠', desc: '阿里云通义千问大模型' },
-    { name: '自定义',            baseUrl: '',                                                model: '',                 icon: '⚙️', desc: '接入任意 OpenAI 兼容 API，可配置多个' },
-  ];
-  const PRESET_NAMES = ['DeepSeek', 'Kimi (Moonshot)', 'Qwen (通义千问)'];
+  // 预置提供商与官方模型列表由后端下发（与快照单一来源），此处仅声明变量。
+  var PRESETS = [];
+  var PRESET_NAMES = [];
 
   const state = {
     step: 1,
@@ -536,29 +584,58 @@ h3{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text-bright)}
   function fillPresetForm(name) {
     var p = findPreset(name);
     if (!p) return;
+    var catalog = PRESETS.filter(function(x) { return x.name === name; })[0];
+    if (!catalog) return;
     state.presetApiKey = '';
-    state.presetModel = p.model;
     var keyInput = $('api-key-input');
     keyInput.value = '';
     keyInput.type = 'password';
     keyInput.placeholder = p.hasKey ? MASK : 'sk-...';
     $('toggle-key-btn').innerHTML = EYE_ON_SVG;
     $('toggle-key-btn').title = '显示 API Key';
-    $('model-input').value = p.model;
     $('url-display-input').value = p.baseUrl;
-    $('model-hint').textContent = p.model ? '(使用默认值，可修改)' : '';
+    $('model-hint').textContent = '(官方模型列表，推荐置顶)';
     $('key-hint').textContent = p.hasKey ? '(已配置，留空保持不变)' : '';
     $('key-error').style.display = 'none';
-    $('model-error').style.display = 'none';
     $('preset-test-result').style.display = 'none';
     $('preset-test-result').className = 'test-result';
+
+    // 模型下拉：推荐模型置顶；当前模型无效/已下线时显示占位提示并要求重选。
+    var select = $('model-input');
+    select.innerHTML = '';
+    var activeModels = (catalog.models || []).filter(function(m) { return !m.deprecated; });
+    var currentValid = activeModels.some(function(m) { return m.id === p.model; });
+    var currentStatus = p.presetModelStatus;
+    if (!currentValid) {
+      var ph = document.createElement('option');
+      ph.value = '';
+      ph.disabled = true;
+      ph.selected = true;
+      ph.textContent = p.model
+        ? '（当前模型 ' + p.model + (currentStatus === 'deprecated' ? ' 已下线/即将下线' : ' 不在官方列表') + '，请重新选择）'
+        : '（请选择模型）';
+      select.appendChild(ph);
+    }
+    activeModels.slice().sort(function(a, b) {
+      return (b.recommended ? 1 : 0) - (a.recommended ? 1 : 0);
+    }).forEach(function(m) {
+      var opt = document.createElement('option');
+      opt.value = m.id;
+      var tierText = m.tier === 'fast' ? ' · ⚡ 快速' : m.tier === 'balanced' ? ' · 均衡' : ' · 更强';
+      opt.textContent = (m.recommended ? '⚡ 推荐 · ' : '') + m.id + tierText + (m.id === p.model ? '（当前）' : '');
+      if (m.id === p.model) opt.selected = true;
+      select.appendChild(opt);
+    });
+    // 当前模型无效时必须显式重选，不静默替换为推荐模型。
+    state.presetModel = currentValid ? select.value : '';
+    $('model-error').style.display = currentValid ? 'none' : 'block';
   }
 
   $('api-key-input').addEventListener('input', function() {
     state.presetApiKey = this.value;
     $('key-error').style.display = 'none';
   });
-  $('model-input').addEventListener('input', function() {
+  $('model-input').addEventListener('change', function() {
     state.presetModel = this.value;
     $('model-error').style.display = 'none';
   });
@@ -586,6 +663,14 @@ h3{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text-bright)}
       } else if (c.testing) {
         resultHtml = '<span class="spinner"></span><span style="color:var(--text-muted);font-size:12px">测试中...</span>';
       }
+      var statusHtml = '';
+      if (c.modelStatus === 'official') {
+        statusHtml = '<div class="field-hint" style="color:var(--success)">✓ 官方模型</div>';
+      } else if (c.modelStatus === 'unofficial') {
+        statusHtml = '<div class="field-hint" style="color:#e8a33d">⚠ 非官方模型</div>';
+      } else if (c.modelStatus === 'unverified') {
+        statusHtml = '<div class="field-hint" style="color:#e8a33d">⚠ 未通过官方列表校验</div>';
+      }
       el.innerHTML =
         '<div class="entry-head">' +
           '<div class="entry-title">' + esc(c.name || ('自定义提供商 ' + (idx + 1))) + '</div>' +
@@ -595,7 +680,7 @@ h3{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text-bright)}
         '<div class="entry-grid">' +
           '<div class="field"><label>名称 <span class="required">*</span></label><input type="text" class="ce-name" data-idx="' + idx + '" value="' + escAttr(c.name) + '" placeholder="MyAI" /></div>' +
           '<div class="field"><label>Base URL <span class="required">*</span></label><input type="text" class="ce-url" data-idx="' + idx + '" value="' + escAttr(c.baseUrl) + '" placeholder="https://api.example.com/v1" /></div>' +
-          '<div class="field full"><label>Model <span class="required">*</span></label><input type="text" class="ce-model" data-idx="' + idx + '" value="' + escAttr(c.model) + '" placeholder="model-name" /></div>' +
+          '<div class="field full"><label>Model <span class="required">*</span></label><input type="text" class="ce-model" data-idx="' + idx + '" value="' + escAttr(c.model) + '" placeholder="model-name" />' + statusHtml + '</div>' +
           '<div class="field full"><label>API Key</label><div class="input-with-button">' +
             '<input type="password" class="ce-key" data-idx="' + idx + '" ' + keyPlaceholder + ' autocomplete="off" />' +
             '<button type="button" class="icon-btn ce-eye" data-idx="' + idx + '" title="显示 API Key">' + EYE_ON_SVG + '</button>' +
@@ -775,7 +860,7 @@ h3{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text-bright)}
     if (!state.presetModel.trim()) {
       $('model-error').style.display = 'block';
       $('model-input').focus();
-      showToast('请填入 Model');
+      showToast('请选择官方模型列表内的模型');
       return false;
     }
     return true;
@@ -952,6 +1037,18 @@ h3{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text-bright)}
     switch (msg.type) {
       case 'init':
         var d = msg.data;
+        PRESETS = (d.presets || []).map(function(p) {
+          return {
+            name: p.name,
+            baseUrl: p.baseUrl,
+            model: p.recommendedModel,
+            icon: p.icon,
+            desc: p.description,
+            models: p.models || [],
+          };
+        });
+        PRESETS.push({ name: '自定义', baseUrl: '', model: '', icon: '⚙️', desc: '接入任意 OpenAI 兼容 API，可配置多个', models: [] });
+        PRESET_NAMES = PRESETS.filter(function(p) { return p.name !== '自定义'; }).map(function(p) { return p.name; });
         state.activeProvider = d.activeProvider || null;
         state.activeChoice = state.activeProvider;
         state.enableCache = d.enableCache !== undefined ? d.enableCache : true;
@@ -968,6 +1065,7 @@ h3{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text-bright)}
             model: found ? (found.model || p.model) : p.model,
             hasKey: !!(found && found.hasApiKey),
             isActive: !!(found && found.name === state.activeProvider),
+            presetModelStatus: found ? (found.presetModelStatus || 'valid') : 'valid',
           });
         });
         state.customs = [];
@@ -984,6 +1082,7 @@ h3{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text-bright)}
             isActive: pr.name === state.activeProvider,
             testing: false,
             result: null,
+            modelStatus: pr.modelStatus || null,
           });
         });
         if (state.customs.length === 0) {
@@ -998,6 +1097,7 @@ h3{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text-bright)}
             isActive: false,
             testing: false,
             result: null,
+            modelStatus: null,
           });
         }
         var selected = null;

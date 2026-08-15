@@ -10,6 +10,11 @@ src/**
 !src/shared/err-store.d.ts
 !src/shared/memory-store.js
 !src/shared/memory-store.d.ts
+!src/shared/model-catalog.js
+!src/shared/model-catalog.d.ts
+!src/shared/model-catalog.json
+!src/shared/model-validation.js
+!src/shared/model-validation.d.ts
 test/**
 docs/**
 scripts/**

@@ -106,14 +106,14 @@
             {
               "name": "Kimi (Moonshot)",
               "baseUrl": "https://api.moonshot.cn/v1",
-              "model": "moonshot-v1-8k",
+              "model": "kimi-k2.7-code-highspeed",
               "apiKey": "",
               "enabled": false
             },
             {
               "name": "Qwen (通义千问)",
               "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-              "model": "qwen-turbo",
+              "model": "qwen3.7-flash",
               "apiKey": "",
               "enabled": false
             }
@@ -129,6 +129,15 @@
               },
               "model": {
                 "type": "string"
+              },
+              "modelStatus": {
+                "type": "string",
+                "enum": [
+                  "official",
+                  "unofficial",
+                  "unverified"
+                ],
+                "description": "自定义提供商的模型来源状态（预置提供商无需设置）"
               },
               "apiKey": {
                 "type": "string"
@@ -176,7 +185,7 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "sync:commands": "node scripts/sync-commands.js",
-    "compile": "npm run sync:commands && tsc -p ./",
+    "compile": "npm run sync:commands && node scripts/copy-models.js && tsc -p ./",
     "watch": "npm run sync:commands && tsc -watch -p ./",
     "test": "node ./out/test/runTest.js",
     "package": "vsce package"

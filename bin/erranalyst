@@ -15,6 +15,8 @@ const CREDENTIALS_FILE = path.join(ERR_DIR, "credentials.json");
 const API_KEY_PREFIX = 'errAnalyst:apiKey:';
 const errStore = require('../src/shared/err-store');
 const memoryStore = require('../src/shared/memory-store');
+const modelCatalog = require('../src/shared/model-catalog');
+const modelValidation = require('../src/shared/model-validation');
 const COMMANDS = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'commands.json'), 'utf-8'));
 
 
@@ -67,13 +69,12 @@ function keychainDelete(account) {
   } catch { }
 }
 
-// ── Preset providers ──
+// ── Preset providers（单一来源：官方模型快照） ──
 
-const PRESETS = {
-  'DeepSeek': { baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash' },
-  'Kimi (Moonshot)': { baseUrl: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-8k' },
-  'Qwen (通义千问)': { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-turbo' },
-};
+const PRESETS = {};
+for (const p of modelCatalog.getPresetProviders()) {
+  PRESETS[p.name] = { baseUrl: p.baseUrl, model: modelCatalog.getRecommendedModel(p.name) };
+}
 
 // ── Helpers ──
 
@@ -98,6 +99,67 @@ function getApiKey(providerOrKey) {
   return keychainGet(API_KEY_PREFIX + providerName);
 }
 
+// ── 模型选择与校验（官方模型列表） ──
+
+/** 预置提供商模型编号菜单：推荐模型置顶，无自由输入。返回模型 id，null 表示取消。 */
+async function pickPresetModelMenu(providerName, currentModel, ask) {
+  const models = modelCatalog.getActiveModels(providerName);
+  if (models.length === 0) {
+    console.log('No official models available for ' + providerName);
+    return null;
+  }
+  const currentValid = models.some((m) => m.id === currentModel);
+  const recommended = modelCatalog.getRecommendedModel(providerName);
+  console.log(`\n${providerName} 官方模型列表（⚡ 推荐 · 速度优先）:`);
+  models.forEach((m, i) => {
+    const rec = m.recommended ? '⚡ 推荐 · ' : '';
+    const cur = m.id === currentModel ? '  (当前)' : '';
+    const tier = m.tier === 'fast' ? ' · 快速' : m.tier === 'balanced' ? ' · 均衡' : ' · 更强';
+    console.log(`  ${i + 1}. ${rec}${m.id}${tier}${cur}`);
+  });
+  if (!currentValid && currentModel) {
+    console.log(`  ⚠ 当前模型 "${currentModel}" 不在官方模型列表或已下线，必须重新选择。`);
+  }
+  const defaultHint = currentValid ? currentModel : recommended;
+  const answer = (await ask(`选择序号（Enter 使用 ${defaultHint || '推荐模型'}）: `)).trim();
+  if (!answer) {
+    if (currentValid) return currentModel;
+    if (recommended) return recommended;
+    return null;
+  }
+  const idx = parseInt(answer, 10) - 1;
+  if (isNaN(idx) || idx < 0 || idx >= models.length) {
+    console.log('无效选择');
+    return null;
+  }
+  return models[idx].id;
+}
+
+/** 自定义提供商模型校验：抓取 /models，失败回退连接测试；非官方模型需确认。返回状态或 null（取消/失败）。 */
+async function validateCustomModelForCli(name, baseUrl, model, apiKey, ask) {
+  if (!apiKey) {
+    console.log(`无法校验 ${name} 的模型：缺少 API Key`);
+    return null;
+  }
+  const result = await modelValidation.validateCustomModel(baseUrl, model, apiKey);
+  if (!result.ok) {
+    console.log(`模型校验失败：${result.error}`);
+    return null;
+  }
+  if (result.status === 'unofficial') {
+    const confirm = (await ask(`模型 "${model}" 不在 ${name} 的官方模型列表，仍要保存？将标记为非官方模型。 [y/N] `)).trim().toLowerCase();
+    if (confirm !== 'y') {
+      console.log('已取消');
+      return null;
+    }
+  } else if (result.status === 'unverified') {
+    console.log(`⚠ 无法获取 ${name} 的官方模型列表，已通过连接测试；模型将标记为"未通过官方列表校验"。`);
+  } else {
+    console.log(`✓ 模型 "${model}" 已通过官方模型列表校验。`);
+  }
+  return result.status;
+}
+
 
 // ── Commands ──
 
@@ -120,6 +182,17 @@ function cmdConfigShow() {
       apiKey: getApiKey(`errAnalyst:apiKey:${p.name}`) ? 'configured' : 'empty',
       enabled: p.enabled,
       isActive: p.name === activeProvider,
+      modelStatus: (() => {
+        if (Object.prototype.hasOwnProperty.call(PRESETS, p.name)) {
+          const s = modelCatalog.getModelStatus(p.name, p.model);
+          return s === 'valid'
+            ? '官方模型'
+            : s === 'deprecated'
+              ? '已下线/即将下线'
+              : '无效模型（不在官方列表）';
+        }
+        return p.modelStatus ? modelValidation.modelStatusLabel(p.modelStatus) : '未校验';
+      })(),
     })),
   };
 
@@ -182,14 +255,29 @@ async function cmdProviderSet() {
   const finalKey = apiKey || existingKey || '';
   if (!finalKey) { console.log('API Key is required'); readline.close(); return; }
 
-  // Model (for existing providers)
-  if (!selected.isNew) {
+  // Model 选择：预置提供商从官方列表选（推荐置顶，无自由输入）；自定义提供商手动输入 + 校验。
+  let modelStatus;
+  const isPreset = Object.prototype.hasOwnProperty.call(PRESETS, name);
+  if (isPreset) {
+    const picked = await pickPresetModelMenu(name, model, ask);
+    if (picked === null) { readline.close(); return; }
+    model = picked;
+  } else if (selected.isNew) {
+    const status = await validateCustomModelForCli(name, baseUrl, model, finalKey, ask);
+    if (!status) { readline.close(); return; }
+    modelStatus = status;
+  } else {
     const m = (await ask(`Model (leave empty to keep "${model}"): `)).trim();
-    if (m) model = m;
+    if (m) {
+      const status = await validateCustomModelForCli(name, baseUrl, m, finalKey, ask);
+      if (!status) { readline.close(); return; }
+      model = m;
+      modelStatus = status;
+    }
   }
 
   // Save to settings.json
-  const entry = { name, baseUrl, model, apiKey: '', enabled: true };
+  const entry = { name, baseUrl, model, apiKey: '', enabled: true, ...(modelStatus ? { modelStatus } : {}) };
   const idx = providers.findIndex(p => p.name === name);
   if (idx >= 0) providers[idx] = { ...providers[idx], ...entry };
   else providers.push(entry);
@@ -263,13 +351,29 @@ async function cmdModelSet() {
     console.log('Invalid selection'); readline.close(); return;
   }
 
-  const model = (await ask(`New model for ${providers[idx].name}: `)).trim();
-  if (!model) { console.log('Cancelled'); readline.close(); return; }
+  const provider = providers[idx];
+  const isPreset = Object.prototype.hasOwnProperty.call(PRESETS, provider.name);
+  let model;
+  let modelStatus;
+  if (isPreset) {
+    const picked = await pickPresetModelMenu(provider.name, provider.model, ask);
+    if (picked === null) { readline.close(); return; }
+    model = picked;
+  } else {
+    const input = (await ask(`New model for ${provider.name} (current: ${provider.model}): `)).trim();
+    if (!input) { console.log('Cancelled'); readline.close(); return; }
+    const apiKey = getApiKey(provider.name);
+    const status = await validateCustomModelForCli(provider.name, provider.baseUrl, input, apiKey, ask);
+    if (!status) { readline.close(); return; }
+    model = input;
+    modelStatus = status;
+  }
 
   providers[idx].model = model;
+  if (modelStatus) providers[idx].modelStatus = modelStatus;
   raw['errAnalyst.providers'] = providers;
   writeSettings(raw);
-  console.log(`\n✓ Model updated: ${providers[idx].name} → ${model}`);
+  console.log(`\n✓ Model updated: ${providers[idx].name} → ${model}${modelStatus ? `（${modelValidation.modelStatusLabel(modelStatus)}）` : ''}`);
   readline.close();
 }
 
