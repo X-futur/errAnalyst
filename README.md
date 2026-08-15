@@ -1,20 +1,50 @@
-# ErrAnalyst - 错误智能分析
+<h1 align="center">ErrAnalyst</h1>
 
-试图解决报错需复制粘贴到 AI 的最后一步路问题。
+<p align="center">
+  <a href="README.md">中文</a> · <a href="README.en.md">English</a>
+</p>
+
+<p align="center">
+  终端报错自动捕获、AI 翻译、根因分析与一键修复
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-brightgreen.svg" alt="License: MIT"></a>
+  <a href="package.json"><img src="https://img.shields.io/badge/Version-0.1.1-007acc.svg" alt="Version"></a>
+  <a href="package.json"><img src="https://img.shields.io/badge/VS%20Code-%3E%3D1.96-8250df.svg" alt="VS Code >= 1.96"></a>
+  <a href="package.json"><img src="https://img.shields.io/badge/Node-%3E%3D18-339933.svg" alt="Node >= 18"></a>
+  <a href="docs/adr"><img src="https://img.shields.io/badge/Docs-ADR%20%26%20Glossary-8A2BE2.svg" alt="Docs"></a>
+</p>
+
+---
+
+## 简介
+
+> 试图解决报错需复制粘贴到 AI 的最后一步路问题。
 
 智能分析 Python 报错，定位代码位置，AI 翻译错误信息、提供一键修复的 VS Code 扩展。终端里出现 Traceback 时自动分析根因，给出中文翻译、修复建议与可确认的代码补丁；内置错误分析对话，并支持长期/短期记忆让后续分析贴合你的习惯。
 
 ## 功能特性
 
-- 自动捕获报错：能自动捕获终端中的 Python 报错（Traceback），无需手动复制
-- 自动添加上下文：能够自动定位报错中对应的代码位置，并将相关的上下文一并捕获
-- 报错分析：AI 翻译错误信息、解释报错原因，输出核心报错术语中英对照，同时提供修复建议
-- 一键修复：生成修复补丁与 diff 预览，逐处确认后写入
-- 错误分析对话：围绕当前报错追问，可根据对话内容提出的修复方案生成修复补丁
-- 本地缓存：保留错误历史，支持重复查看
-- 记忆系统：短期记忆（会话滚动摘要）、长期记忆（修复偏好、修复建议偏好、错误分析偏好、常犯错误统计）
-- 多 AI 提供商：DeepSeek、Kimi (Moonshot)、Qwen（通义千问），支持任意 OpenAI 兼容 API
-- 支持配套 CLI 命令（`erranalyst`）
+- 🎯 **自动捕获报错**：自动捕获终端中的 Python 报错（Traceback），无需手动复制
+- 📎 **自动添加上下文**：自动定位报错对应的代码位置，并将相关上下文一并捕获
+- 🧠 **报错分析**：AI 翻译错误信息、解释报错原因，输出核心报错术语中英对照，同时提供修复建议
+- 🔧 **一键修复**：生成修复补丁与 diff 预览，逐处确认后写入
+- 💬 **错误分析对话**：围绕当前报错追问，可根据对话内容提出的修复方案生成修复补丁
+- 🗂️ **本地缓存**：保留错误历史，支持重复查看
+- 🧬 **记忆系统**：短期记忆（会话滚动摘要）、长期记忆（修复偏好、修复建议偏好、错误分析偏好、常犯错误统计）
+- 🔌 **多 AI 提供商**：DeepSeek、Kimi (Moonshot)、Qwen（通义千问），支持任意 OpenAI 兼容 API
+- ⌨️ **配套 CLI**：提供 `erranalyst` 命令，覆盖提供商配置、模型切换、缓存与记忆管理
+
+## 目录
+
+- [本地部署](#本地部署)
+- [CLI 部署](#cli-部署)
+- [使用](#使用)
+- [记忆系统](#记忆系统)
+- [配置](#配置)
+- [项目文档](#项目文档)
+- [许可证](#许可证)
 
 ## 本地部署
 
@@ -59,13 +89,13 @@
    erranalyst provider set
    ```
 
-> **附加说明**：该 `bash` 命令若在终端运行需安装配置CLI，下文同理
+> 附加说明：该 `bash` 命令若在终端运行需先安装配置 CLI，下文同理。
 
 5. 验证：在集成终端运行一个会报错的 Python 脚本（如 `python3 main.py`），侧边栏应自动展示错误分析。
 
 ### 方式二：打包 VSIX 安装（发布路径）
 
-1. 在仓库`release`处下载`VSIX`文件
+1. 在仓库 `release` 处下载 `VSIX` 文件
 
 2. 安装到 VS Code：
 
@@ -147,7 +177,7 @@ erranalyst help
 
 安装并配置好 AI 提供商后，在集成终端运行 Python 脚本，报错时会自动进行分析。也可通过命令面板（`Cmd/Ctrl + Shift + P`）或 CLI 执行以下命令：
 
-> 两者指该命令同时支持 `VS Code command` 和 `CLI` 
+> 两者指该命令同时支持 `VS Code command` 和 `CLI`。
 
 | 命令 | 可用位置 | 说明 |
 | --- | --- | --- |
@@ -161,7 +191,7 @@ erranalyst help
 | `erranalyst model set` | 两者 | 切换 AI 服务提供商的具体模型 |
 | `erranalyst memory config` | 两者 | 查看和管理长期记忆（偏好、常犯错误、开关） |
 
-### 记忆系统
+## 记忆系统
 
 - **短期记忆**：当前报错会话的消息历史与滚动摘要，进程内保存、不落盘；历史被截断时自动压缩为摘要，保证早期对话信息不丢失。
 - **长期记忆**：持久保存到 `~/.errAnalyst/memory.json`，包含修复偏好（补丁代码怎么改）、修复建议偏好（文字指引怎么给）、错误分析偏好（分析结果怎么讲）与常犯错误统计；按产出类别注入分析、修复补丁与对话提示词。
@@ -191,6 +221,12 @@ erranalyst help
 | `~/.errAnalyst/cache.json` | 错误分析缓存（历史查阅，不参与自动分析） |
 | `~/.errAnalyst/memory.json` | 长期记忆（偏好与常犯错误统计，参与自动分析） |
 | `~/.errAnalyst/credentials.json` | 供 CLI 读取的 API Key 镜像 |
+
+## 项目文档
+
+- [CONTEXT.md](CONTEXT.md) — 领域术语表（统一项目内术语）
+- [docs/adr](docs/adr) — 架构决策记录（ADR）
+- [docs/design-v1.md](docs/design-v1.md) 至 [docs/design-v6.md](docs/design-v6.md) — 迭代设计文档
 
 ## 许可证
 
