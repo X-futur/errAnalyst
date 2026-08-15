@@ -54,6 +54,7 @@ export class OpenAICompatibleProvider implements LlmProvider {
       temperature: 0.1,
       max_tokens: 4096,
       ...(useStream ? { stream: true } : {}),
+      ...buildNonThinkingParams(this.config),
     });
 
     return new Promise<LlmResponse>((resolve) => {
@@ -186,6 +187,44 @@ export class OpenAICompatibleProvider implements LlmProvider {
       req.end();
     });
   }
+}
+
+/**
+ * 默认非思考模式：按厂商/模型返回关闭思考所需的额外请求参数。
+ *
+ * 只有「混合思考模型」（可在思考/非思考间切换）才注入参数：
+ * - DeepSeek（deepseek-v4-flash/pro 等）：thinking 默认开启，需显式
+ *   {"thinking":{"type":"disabled"}} 关闭。
+ * - Kimi/Moonshot：仅 kimi-k2.6 / kimi-k2.5 支持关闭；kimi-k2.7-code、
+ *   kimi-k3 等纯思考模型传 disabled 会直接 400，故不传。
+ * - Qwen（DashScope 兼容模式）：{"enable_thinking":false} 关闭混合思考。
+ * - 自定义/未知提供商：不注入厂商私有参数，避免 OpenAI 等严格端点
+ *   因未知字段报错；其默认行为由提供商自身决定。
+ */
+export function buildNonThinkingParams(
+  config: Pick<LlmProviderConfig, 'name' | 'baseUrl' | 'model'>,
+): Record<string, unknown> | undefined {
+  const url = config.baseUrl.toLowerCase();
+  const model = config.model.toLowerCase();
+
+  // DeepSeek：思考模式默认开启，必须显式关闭。
+  if (config.name === 'DeepSeek' || url.includes('deepseek')) {
+    return { thinking: { type: 'disabled' } };
+  }
+
+  // Kimi/Moonshot：仅混合思考模型（k2.6 / k2.5）可关闭。
+  if (config.name === 'Kimi (Moonshot)' || url.includes('moonshot')) {
+    const hybrid = model === 'kimi-k2.6' || model === 'kimi-k2.5'
+      || /[-_.]?k2\.[56]([-_.]|$)/.test(model);
+    return hybrid ? { thinking: { type: 'disabled' } } : undefined;
+  }
+
+  // Qwen（DashScope 兼容模式）：enable_thinking=false 关闭混合思考。
+  if (config.name === 'Qwen (通义千问)' || url.includes('dashscope') || url.includes('aliyuncs')) {
+    return { enable_thinking: false };
+  }
+
+  return undefined;
 }
 
 // ── Prompt construction ──
