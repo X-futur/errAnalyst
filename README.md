@@ -13,7 +13,6 @@
   <a href="package.json"><img src="https://img.shields.io/badge/Version-0.1.1-007acc.svg" alt="Version"></a>
   <a href="package.json"><img src="https://img.shields.io/badge/VS%20Code-%3E%3D1.96-8250df.svg" alt="VS Code >= 1.96"></a>
   <a href="package.json"><img src="https://img.shields.io/badge/Node-%3E%3D18-339933.svg" alt="Node >= 18"></a>
-  <a href="docs/adr"><img src="https://img.shields.io/badge/Docs-ADR%20%26%20Glossary-8A2BE2.svg" alt="Docs"></a>
 </p>
 
 ---
