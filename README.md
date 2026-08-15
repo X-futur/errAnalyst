@@ -58,9 +58,8 @@
    ```bash
    erranalyst provider set
    ```
-配置文件及本地缓存在 `~/.erranalyst` 目录下
 
-* **附加说明**：该 `bash` 命令若在终端运行需安装配置CLI，下文同理
+> **附加说明**：该 `bash` 命令若在终端运行需安装配置CLI，下文同理
 
 5. 验证：在集成终端运行一个会报错的 Python 脚本（如 `python3 main.py`），侧边栏应自动展示错误分析。
 
@@ -143,6 +142,8 @@ erranalyst help
 ## 使用
 
 安装并配置好 AI 提供商后，在集成终端运行 Python 脚本，报错时会自动进行分析。也可通过命令面板（`Cmd/Ctrl + Shift + P`）或 CLI 执行以下命令：
+
+> 两者指该命令同时支持 `VS Code command` 和 `CLI` 
 
 | 命令 | 可用位置 | 说明 |
 | --- | --- | --- |
