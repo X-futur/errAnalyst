@@ -89,9 +89,13 @@
 需从 `release` 界面获取到 `install-cli.sh` 文件，并执行：
 
 ```bash
+# 浏览器/命令行下载不会保留 Unix 执行位，先补上可执行权限
+chmod +x install-cli.sh
 ./install-cli.sh
 source ~/.zshrc
 ```
+
+> 提示：若下载后权限仍是 `-r--r--r--`，也可以不改权限，直接用 `bash install-cli.sh` 运行，效果相同。
 
 脚本会在 `~/.local/bin` 安装一个动态 wrapper，并把该目录写入 shell 配置（`~/.zshrc` / `~/.bashrc`），新开终端后生效。wrapper 每次执行时自动定位 VS Code 扩展目录中**最新安装**的 errAnalyst 扩展来运行，因此以后升级扩展无需重新运行本脚本。
 
