@@ -145,15 +145,10 @@
           "default": "DeepSeek",
           "description": "当前使用的 AI 提供商名称"
         },
-        "errAnalyst.autoAnalyze": {
-          "type": "boolean",
-          "default": true,
-          "description": "终端检测到报错时自动调用 AI 分析"
-        },
         "errAnalyst.enableCache": {
           "type": "boolean",
           "default": true,
-          "description": "启用错误缓存"
+          "description": "保存错误历史（仅作历史查阅，不参与自动分析）"
         },
         "errAnalyst.aiTimeout": {
           "type": "number",

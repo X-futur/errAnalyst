@@ -98,6 +98,9 @@ export function activate(context: vscode.ExtensionContext) {
     onChatAddFiles: () => {
       void pickChatFiles();
     },
+    onConfigureProvider: () => {
+      void Config.getInstance().getWizardConfig().then(cfg => configWizard.show(cfg));
+    },
   });
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(AnalysisViewProvider.viewType, analysisViewProvider)
@@ -176,9 +179,7 @@ export function activate(context: vscode.ExtensionContext) {
     hoverProvider.showHover(result);
 
     // 3. Auto-analyze with AI
-    if (Config.getInstance().getAutoAnalyze()) {
-      await autoAnalyze(result, category);
-    }
+    await autoAnalyze(result, category);
   });
   terminalWatcher.activate();
 
@@ -191,7 +192,7 @@ export function activate(context: vscode.ExtensionContext) {
   (async () => {
     const provider = await Config.getInstance().getActiveProvider();
     if (!provider) {
-      configWizard.show();
+      configWizard.show(await Config.getInstance().getWizardConfig());
     }
   })();
 
@@ -910,7 +911,9 @@ async function autoAnalyze(
     result.category = parsed.category;
   }
 
-  errorMemory.cacheResult(result);
+  if (Config.getInstance().getEnableCache()) {
+    errorMemory.cacheResult(result);
+  }
   if (Config.getInstance().getMemoryEnabled()) {
     userMemory.recordErrorStat(result.errorType);
   }

@@ -46,6 +46,7 @@ interface AnalysisViewHandlers {
   onChatStop: () => void;
   onChatAction: (action: ChatWebviewAction, fileId?: string) => void;
   onChatAddFiles: () => void;
+  onConfigureProvider: () => void;
 }
 
 export class AnalysisViewProvider implements vscode.WebviewViewProvider {
@@ -190,6 +191,9 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
       case 'chatAddFiles':
         this.handlers.onChatAddFiles();
         break;
+      case 'configureProvider':
+        this.handlers.onConfigureProvider();
+        break;
     }
   }
 
@@ -225,14 +229,28 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
   }
 
   private updateContent(): void {
-    if (!this.view || !this.currentError) return;
+    if (!this.view) return;
+    if (!this.currentError) {
+      this.view.webview.html = this.getHtmlTemplate(this.buildWelcomeHtml());
+      return;
+    }
     const error = this.currentError;
 
     const headerHtml = this.buildHeaderHtml();
     const analysisHtml = this.buildAnalysisHtml();
     const sourceInfoHtml = this.buildSourceInfoHtml();
 
-    this.view.webview.html = this.getHtmlTemplate(headerHtml, analysisHtml, sourceInfoHtml);
+    this.view.webview.html = this.getHtmlTemplate(headerHtml + analysisHtml + sourceInfoHtml);
+  }
+
+  private buildWelcomeHtml(): string {
+    return `<div class="welcome">
+      <div class="welcome-logo">ErrAnalyst</div>
+      <h1 class="welcome-title">请开始您的编码旅程，ErrAnalyst 将自动捕获报错</h1>
+      <div class="welcome-status"><span class="status-dot"></span>已就绪 · 自动捕获终端报错</div>
+      <button class="welcome-btn" onclick="configureProvider()">配置 AI Provider</button>
+      <p class="welcome-hint">在终端运行你的代码即可，捕获到报错后会自动展示分析结果</p>
+    </div>`;
   }
 
   private buildHeaderHtml(): string {
@@ -268,9 +286,14 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
     return '<div class="error-header">'
       + `<div class="error-type-row">`
       + `<div class="error-type-chip"><h3>${this.esc(error.errorType)}</h3></div>`
+      + `<div class="header-actions">`
       + `<span class="tooltip-wrap align-right tooltip-below" data-tooltip="重新 AI 分析">`
       + `<button class="reanalyze-btn" onclick="reanalyze()">↻</button>`
       + `</span>`
+      + `<span class="tooltip-wrap align-right tooltip-below" data-tooltip="配置 AI Provider">`
+      + `<button class="reanalyze-btn" onclick="configureProvider()">⚙</button>`
+      + `</span>`
+      + `</div>`
       + `</div>`
       + this.buildCategoryHtml()
       + pairHtml
@@ -754,9 +777,7 @@ export class AnalysisViewProvider implements vscode.WebviewViewProvider {
   }
 
   private getHtmlTemplate(
-    headerHtml: string,
-    analysisHtml: string,
-    sourceInfoHtml: string,
+    bodyHtml: string,
   ): string {
     return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -771,6 +792,7 @@ h3{margin-bottom:8px;font-size:14px;}h4{font-size:11px;text-transform:uppercase;
 .cache-badge{background:transparent;border:none;border-radius:0;color:var(--success);padding:4px 0;font-size:11px;margin-bottom:8px;}
 .error-header{border-bottom:1px solid var(--border);padding-bottom:8px;margin-bottom:8px;}
 .error-type-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;}
+.header-actions{display:flex;align-items:center;gap:6px;}
 .error-type-chip{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--text-muted);padding:0;}
 .error-type-chip b{color:var(--text);font-family:Consolas,Monaco,monospace;font-weight:600;}
 .reanalyze-btn{background:var(--bg-card);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:4px 8px;font-size:11px;cursor:pointer;}
@@ -906,16 +928,27 @@ h3{margin-bottom:8px;font-size:14px;}h4{font-size:11px;text-transform:uppercase;
 .fix-mini-btn:disabled:hover{border-color:var(--border);}
 .fix-mini-btn.reject:hover{border-color:#f44747;color:#f44747;}
 .fix-empty{color:var(--text-muted);font-size:11px;}
+.welcome{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:48px 16px;text-align:center;min-height:65vh;}
+.welcome-logo{font-family:Consolas,Monaco,monospace;font-size:24px;font-weight:700;letter-spacing:1px;color:var(--accent);}
+.welcome-title{font-size:14px;font-weight:600;color:var(--text);line-height:1.7;margin:0;}
+.welcome-status{display:inline-flex;align-items:center;gap:7px;font-size:11px;color:var(--text-muted);border:1px solid var(--border);border-radius:12px;padding:4px 12px;}
+.status-dot{width:8px;height:8px;border-radius:50%;background:var(--success);box-shadow:0 0 6px var(--success);animation:pulse 2s ease-in-out infinite;}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.4;}}
+.welcome-btn{background:var(--accent);border:none;color:#fff;border-radius:4px;padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;}
+.welcome-btn:hover{filter:brightness(1.12);}
+.welcome-hint{font-size:11px;color:var(--text-muted);}
 </style>
 </head>
 <body>
 ${this.fromCache ? `<div class="cache-badge">来自本地缓存 · ${new Date(this.cachedAt).toLocaleString('zh-CN')}</div>` : ''}
-${headerHtml}
-${analysisHtml}
-${sourceInfoHtml}
+${bodyHtml}
 <script>
 (function(){
   const vscode = acquireVsCodeApi();
+
+  window.configureProvider = function() {
+    vscode.postMessage({ type: 'configureProvider' });
+  };
 
   window.reanalyze = function() {
     vscode.postMessage({ type: 'reanalyze' });

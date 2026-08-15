@@ -114,6 +114,9 @@ function activate(context) {
         onChatAddFiles: () => {
             void pickChatFiles();
         },
+        onConfigureProvider: () => {
+            void config_1.Config.getInstance().getWizardConfig().then(cfg => configWizard.show(cfg));
+        },
     });
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(analysisWebview_1.AnalysisViewProvider.viewType, analysisViewProvider));
     // ── Fix preview tab (created before the session manager, whose state
@@ -179,9 +182,7 @@ function activate(context) {
         chatSessionManager.startForError([]);
         hoverProvider.showHover(result);
         // 3. Auto-analyze with AI
-        if (config_1.Config.getInstance().getAutoAnalyze()) {
-            await autoAnalyze(result, category);
-        }
+        await autoAnalyze(result, category);
     });
     terminalWatcher.activate();
     // ── Config wizard ──
@@ -192,7 +193,7 @@ function activate(context) {
     (async () => {
         const provider = await config_1.Config.getInstance().getActiveProvider();
         if (!provider) {
-            configWizard.show();
+            configWizard.show(await config_1.Config.getInstance().getWizardConfig());
         }
     })();
     // ── Commands (registered from commands.json) ──
@@ -866,7 +867,9 @@ async function autoAnalyze(result, category, options) {
     if (parsed.category && result.category === 'UNKNOWN') {
         result.category = parsed.category;
     }
-    errorMemory.cacheResult(result);
+    if (config_1.Config.getInstance().getEnableCache()) {
+        errorMemory.cacheResult(result);
+    }
     if (config_1.Config.getInstance().getMemoryEnabled()) {
         userMemory.recordErrorStat(result.errorType);
     }

@@ -2,23 +2,14 @@ import * as vscode from 'vscode';
 import * as https from 'https';
 import * as http from 'http';
 import { URL } from 'url';
-import { Config } from '../config';
-import { PRESET_PROVIDERS, ProviderPreset } from '../presets';
-
-interface ExistingConfig {
-  activeProvider: string | null;
-  providers: Array<{ name: string; baseUrl: string; model: string; apiKey?: string }>;
-  autoAnalyze: boolean;
-  apiKey?: string;
-  enableCache: boolean;
-}
+import { Config, WizardExistingConfig } from '../config';
 
 export class ConfigWizard {
   private panel: vscode.WebviewPanel | null = null;
   private disposables: vscode.Disposable[] = [];
-  private existingConfig?: ExistingConfig;
+  private existingConfig?: WizardExistingConfig;
 
-  show(existingConfig?: ExistingConfig): void {
+  show(existingConfig?: WizardExistingConfig): void {
     if (this.panel) {
       this.panel.reveal(vscode.ViewColumn.Active, true);
       return;
@@ -57,7 +48,6 @@ export class ConfigWizard {
           data: existingConfig || {
             activeProvider: null,
             providers: [],
-            autoAnalyze: true,
             enableCache: true,
           },
         });
@@ -91,22 +81,52 @@ export class ConfigWizard {
     }
   }
 
-  private async handleTestConnection(data: { baseUrl: string; model: string; apiKey: string }): Promise<void> {
-    const result = await this.testConnection(data.baseUrl, data.model, data.apiKey);
-    this.panel?.webview.postMessage({ type: 'testResult', data: result });
+  private async handleTestConnection(data: {
+    id: string;
+    name: string;
+    baseUrl: string;
+    model: string;
+    apiKey: string;
+  }): Promise<void> {
+    // 用户未输入新 Key 时，用已保存的 Key 测试（真实 Key 不出 webview）。
+    let apiKey = data.apiKey || '';
+    if (!apiKey && data.name) {
+      apiKey = (await Config.getInstance().getApiKey(data.name)) || '';
+    }
+    const result = await this.testConnection(data.baseUrl, data.model, apiKey);
+    this.panel?.webview.postMessage({ type: 'testResult', data: { id: data.id, ...result } });
   }
 
-  private async handleSave(data: {
-    provider: { name: string; baseUrl: string; model: string };
-    apiKey: string;
-    autoAnalyze: boolean;
-    enableCache: boolean;
-  }): Promise<void> {
+  private async handleSave(data:
+    | {
+        kind: 'preset';
+        provider: { name: string; baseUrl: string; model: string };
+        apiKey: string | null;
+        activeProvider: string;
+        enableCache: boolean;
+      }
+    | {
+        kind: 'custom';
+        providers: Array<{ name: string; baseUrl: string; model: string; apiKey: string | null }>;
+        activeProvider: string;
+        enableCache: boolean;
+      }
+  ): Promise<void> {
     try {
-      await Config.getInstance().saveProviderConfig(data.provider, data.apiKey, {
-        autoAnalyze: data.autoAnalyze,
-        enableCache: data.enableCache,
-      });
+      if (data.kind === 'preset') {
+        await Config.getInstance().saveProviderConfig(
+          data.provider,
+          data.apiKey || null,
+          { enableCache: data.enableCache },
+          data.activeProvider
+        );
+      } else {
+        await Config.getInstance().saveCustomProviders(
+          data.providers,
+          data.activeProvider,
+          { enableCache: data.enableCache }
+        );
+      }
       this.panel?.webview.postMessage({ type: 'saved' });
     } catch (e: any) {
       this.panel?.webview.postMessage({
@@ -189,7 +209,6 @@ export class ConfigWizard {
   }
 
   private getHtmlTemplate(): string {
-    const PRESETS = PRESET_PROVIDERS;
     return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -203,7 +222,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .step-dot{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;background:var(--step-inactive);color:var(--text-muted);transition:all .2s}
 .step-dot.active{background:var(--step-active);color:#fff}
 .step-dot.done{background:var(--step-done);color:#fff}
-.step-line{width:40px;height:2px;background:var(--step-inactive);transition:background .2s}
+.step-line{width:60px;height:2px;background:var(--step-inactive);transition:background .2s}
 .step-line.done{background:var(--step-done)}
 .step-label{font-size:11px;text-align:center;color:var(--text-muted);margin-top:4px}
 .step-label.active{color:var(--text-bright)}
@@ -211,6 +230,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .step-content{display:none}
 .step-content.active{display:block}
 h2{font-size:16px;margin-bottom:16px;color:var(--text-bright)}
+h3{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text-bright)}
 .card-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:20px}
 .provider-card{background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:12px;cursor:pointer;transition:all .15s}
 .provider-card:hover{border-color:var(--accent);background:rgba(0,122,204,.08)}
@@ -218,8 +238,13 @@ h2{font-size:16px;margin-bottom:16px;color:var(--text-bright)}
 .provider-card .card-icon{font-size:20px;margin-bottom:6px}
 .provider-card .card-name{font-weight:600;font-size:13px;margin-bottom:2px}
 .provider-card .card-desc{font-size:11px;color:var(--text-muted)}
+.card-badge{display:inline-block;font-size:10px;padding:1px 7px;border-radius:8px;margin-top:6px;font-weight:600}
+.card-badge.configured{background:rgba(78,201,176,.15);color:var(--success)}
+.card-badge.active{background:rgba(0,122,204,.22);color:#75b8f0}
+.card-active-btn{margin-top:8px;width:100%;background:transparent;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);padding:4px 8px;font-size:11px;cursor:pointer;transition:all .15s}
+.card-active-btn:hover{border-color:var(--accent);color:#fff}
+.card-active-btn.active{background:rgba(0,122,204,.18);border-color:var(--accent);color:#75b8f0;cursor:default}
 .form-section{background:var(--bg-card);border-radius:6px;padding:16px;margin-bottom:16px}
-.form-section h3{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text-bright)}
 .field{margin-bottom:12px}
 .field:last-child{margin-bottom:0}
 .field label{display:block;font-size:12px;margin-bottom:4px;color:var(--text-muted)}
@@ -231,8 +256,34 @@ h2{font-size:16px;margin-bottom:16px;color:var(--text-bright)}
 .input-with-button input{flex:1}
 .input-with-button button{padding:6px 10px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:pointer;font-size:14px;transition:background .15s}
 .input-with-button button:hover{background:var(--accent)}
+.input-with-button button.icon-btn{width:32px;padding:0;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+.input-with-button button.icon-btn svg{display:block}
 .field-error{color:var(--error);font-size:11px;margin-top:4px;display:none}
 .field-hint{color:var(--text-muted);font-size:11px;margin-top:4px}
+.test-row{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
+.test-btn{background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:5px 14px;font-size:12px;cursor:pointer;transition:background .15s}
+.test-btn:hover:not(:disabled){border-color:var(--accent);color:#fff}
+.test-btn:disabled{opacity:.45;cursor:not-allowed}
+.test-result{font-size:12px;display:none}
+.test-result.success{display:block;color:var(--success)}
+.test-result.failure{display:block;color:var(--error)}
+.test-result .test-detail{margin-top:2px;font-size:11px;opacity:.8}
+.custom-section h3{margin-bottom:4px}
+.custom-hint{font-size:11px;color:var(--text-muted);margin-bottom:14px}
+.custom-entries{display:flex;flex-direction:column;gap:10px;margin-bottom:12px}
+.custom-entry{background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:14px 16px;transition:border-color .15s}
+.custom-entry.active{border-color:var(--accent)}
+.entry-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.entry-title{flex:1;font-size:12px;font-weight:600;color:var(--text-bright);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.entry-active-label{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);cursor:pointer;white-space:nowrap}
+.entry-active-label input{accent-color:var(--accent);cursor:pointer}
+.entry-remove{background:transparent;border:1px solid var(--border);border-radius:4px;color:var(--text-muted);padding:3px 10px;font-size:11px;cursor:pointer;transition:all .15s}
+.entry-remove:hover{border-color:var(--error);color:var(--error)}
+.entry-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.entry-grid .field{margin-bottom:0}
+.entry-grid .field.full{grid-column:1 / -1}
+.add-entry-btn{width:100%;padding:10px;background:transparent;border:1px dashed var(--border);border-radius:6px;color:var(--text-muted);font-size:12px;cursor:pointer;transition:all .15s}
+.add-entry-btn:hover{border-color:var(--accent);color:var(--accent)}
 .nav-bar{display:flex;justify-content:space-between;align-items:center;margin-top:20px;padding-top:16px;border-top:1px solid var(--border)}
 .btn{padding:8px 20px;border:none;border-radius:4px;font-size:13px;cursor:pointer;transition:background .15s}
 .btn-primary{background:var(--accent);color:#fff}
@@ -240,20 +291,11 @@ h2{font-size:16px;margin-bottom:16px;color:var(--text-bright)}
 .btn-primary:disabled{opacity:.4;cursor:not-allowed}
 .btn-secondary{background:var(--bg-input);color:var(--text);border:1px solid var(--border)}
 .btn-secondary:hover{background:#4a4a4a}
-.test-card{background:var(--bg-card);border-radius:6px;padding:24px;text-align:center;max-width:400px;margin:0 auto}
-.test-card h3{font-size:15px;margin-bottom:8px}
-.test-card p{font-size:12px;color:var(--text-muted);margin-bottom:20px}
-.test-result{margin-top:16px;padding:10px;border-radius:4px;font-size:12px;display:none}
-.test-result.success{display:block;background:rgba(78,201,176,.15);color:var(--success);border:1px solid var(--success)}
-.test-result.failure{display:block;background:rgba(244,71,71,.15);color:var(--error);border:1px solid var(--error)}
-.test-result .test-detail{margin-top:4px;font-size:11px;opacity:.8}
-.skip-link{display:inline-block;margin-top:12px;font-size:12px;color:var(--text-muted);cursor:pointer;text-decoration:underline}
-.skip-link:hover{color:var(--accent)}
-.btn-testing{pointer-events:none;opacity:.7}
-.spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:6px}
+.toast{position:fixed;top:18px;left:50%;transform:translateX(-50%);background:var(--bg-input);color:var(--text-bright);border:1px solid var(--accent);border-radius:6px;padding:8px 16px;font-size:13px;z-index:100;box-shadow:0 4px 12px rgba(0,0,0,.35);opacity:0;pointer-events:none;transition:opacity .2s}
+.toast.show{opacity:1}
+.spinner{display:inline-block;width:13px;height:13px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
 .pref-section{background:var(--bg-card);border-radius:6px;padding:16px;margin-bottom:16px}
-.pref-section h3{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text-bright)}
 .toggle-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)}
 .toggle-row:last-child{border-bottom:none}
 .toggle-row .toggle-label{font-size:13px}
@@ -263,9 +305,8 @@ h2{font-size:16px;margin-bottom:16px;color:var(--text-bright)}
 .toggle .toggle-thumb{width:16px;height:16px;background:#fff;border-radius:50%;position:absolute;top:2px;left:2px;transition:left .2s}
 .toggle.on .toggle-thumb{left:22px}
 .summary-card{background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:16px;margin-bottom:16px}
-.summary-card h3{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text-bright)}
 .summary-row{display:flex;padding:4px 0;font-size:12px}
-.summary-row .summary-key{width:80px;color:var(--text-muted);flex-shrink:0}
+.summary-row .summary-key{width:100px;color:var(--text-muted);flex-shrink:0}
 .summary-row .summary-val{color:var(--text)}
 .summary-row .summary-val.yes{color:var(--success)}
 .summary-row .summary-val.no{color:var(--text-muted)}
@@ -281,12 +322,7 @@ h2{font-size:16px;margin-bottom:16px;color:var(--text-bright)}
   <div class="step-line" id="line-1"></div>
   <div class="step-indicator-col">
     <div class="step-dot" id="dot-2">2</div>
-    <div class="step-label" id="label-2">验证连接</div>
-  </div>
-  <div class="step-line" id="line-2"></div>
-  <div class="step-indicator-col">
-    <div class="step-dot" id="dot-3">3</div>
-    <div class="step-label" id="label-3">偏好设置</div>
+    <div class="step-label" id="label-2">偏好与保存</div>
   </div>
 </div>
 
@@ -294,66 +330,55 @@ h2{font-size:16px;margin-bottom:16px;color:var(--text-bright)}
 <div class="step-content active" id="step-1">
   <h2>选择 AI 提供商</h2>
   <div class="card-grid" id="provider-cards"></div>
-  <div class="form-section">
+
+  <div class="form-section" id="preset-form" style="display:none">
     <h3>填写凭据</h3>
     <div class="field">
       <label>API Key <span class="required">*</span></label>
       <div class="input-with-button">
         <input type="password" id="api-key-input" placeholder="sk-..." autocomplete="off" />
-        <button id="paste-btn" title="粘贴">&#x1F4CB;</button>
+        <button id="toggle-key-btn" type="button" class="icon-btn" title="显示 API Key"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
       </div>
-      <div class="field-error" id="key-error">请输入 API Key</div>
+      <div class="field-error" id="key-error">请填入 API Key</div>
+      <div class="field-hint" id="key-hint"></div>
     </div>
     <div class="field">
       <label>Model <span class="field-hint" id="model-hint">(使用默认值)</span></label>
       <input type="text" id="model-input" />
-      <div class="field-error" id="model-error">请输入 Model 名称</div>
+      <div class="field-error" id="model-error">请填入 Model</div>
     </div>
-    <div class="field" id="url-field" style="display:none">
-      <label>Base URL <span class="required">*</span></label>
-      <input type="text" id="url-input" placeholder="https://api.example.com/v1" />
-      <div class="field-error" id="url-error">请输入 Base URL</div>
-    </div>
-    <div class="field" id="url-display">
+    <div class="field">
       <label>Base URL</label>
       <input type="text" id="url-display-input" disabled />
     </div>
+    <div class="test-row">
+      <button class="test-btn" id="preset-test-btn">测试连接</button>
+      <div class="test-result" id="preset-test-result"></div>
+    </div>
+  </div>
+
+  <div class="custom-section" id="custom-section" style="display:none">
+    <h3>自定义提供商</h3>
+    <div class="custom-hint">可配置多个 OpenAI 兼容提供商；每个条目需名称、Base URL、Model 与 API Key，点“设为当前使用”指定激活项。</div>
+    <div class="custom-entries" id="custom-entries"></div>
+    <button class="add-entry-btn" id="add-entry-btn">＋ 添加自定义提供商</button>
   </div>
 </div>
 
 <!-- Step 2 -->
 <div class="step-content" id="step-2">
-  <h2>验证连接</h2>
-  <div class="test-card">
-    <h3>测试 API 连接</h3>
-    <p>确认 API Key 有效，测试通过后自动进入下一步</p>
-    <button class="btn btn-primary" id="test-btn">测试连接</button>
-    <div class="test-result" id="test-result"></div>
-    <div class="skip-link" id="skip-link">跳过测试 &rarr;</div>
-  </div>
-</div>
-
-<!-- Step 3 -->
-<div class="step-content" id="step-3">
   <h2>偏好设置</h2>
   <div class="pref-section">
     <h3>全局设置</h3>
     <div class="toggle-row">
       <div>
-        <div class="toggle-label">自动 AI 分析</div>
-        <div class="toggle-desc">终端检测到报错时自动调用 AI 分析</div>
-      </div>
-      <div class="toggle on" id="toggle-autoAnalyze" data-key="autoAnalyze"><div class="toggle-thumb"></div></div>
-    </div>
-    <div class="toggle-row">
-      <div>
-        <div class="toggle-label">缓存相同报错</div>
-        <div class="toggle-desc">缓存相同报错的分析结果，避免重复请求</div>
+        <div class="toggle-label">保存错误历史</div>
+        <div class="toggle-desc">把报错分析结果保存到本地缓存，仅作历史查阅，不参与自动分析</div>
       </div>
       <div class="toggle on" id="toggle-enableCache" data-key="enableCache"><div class="toggle-thumb"></div></div>
     </div>
   </div>
-  <div class="summary-card">
+  <div class="summary-card" id="summary-card">
     <h3>配置摘要</h3>
     <div id="summary-content"></div>
   </div>
@@ -369,129 +394,550 @@ h2{font-size:16px;margin-bottom:16px;color:var(--text-bright)}
 <script>
 (function() {
   const vscode = acquireVsCodeApi();
-  const state = {
-    step: 1, selectedProvider: null, apiKey: '', model: '', baseUrl: '',
-    autoAnalyze: true, enableCache: true, testPassed: false, isDirty: false,
-    existingProviderName: null, existingApiKey: '',
-  };
+  const MASK = '●●●●●●●●';
   const PRESETS = [
-    { name: 'DeepSeek',        baseUrl: 'https://api.deepseek.com',                        model: 'deepseek-v4-flash', icon: '\\ud83d\\udd35', desc: '\\u6027\\u4ef7\\u6bd4\\u9ad8\\u7684\\u901a\\u7528\\u6a21\\u578b' },
-    { name: 'Kimi (Moonshot)', baseUrl: 'https://api.moonshot.cn/v1',                         model: 'moonshot-v1-8k',  icon: '\\ud83d\\udd34', desc: '\\u957f\\u4e0a\\u4e0b\\u6587\\u63a8\\u7406\\u80fd\\u529b\\u5f3a' },
-    { name: 'Qwen (\\u901a\\u4e49\\u5343\\u95ee)', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-turbo', icon: '\\ud83d\\udfe0', desc: '\\u963f\\u91cc\\u4e91\\u901a\\u4e49\\u5343\\u95ee\\u5927\\u6a21\\u578b' },
-    { name: '\\u81ea\\u5b9a\\u4e49', baseUrl: '', model: '', icon: '\\u2699\\ufe0f', desc: '\\u63a5\\u5165\\u4efb\\u610f OpenAI \\u517c\\u5bb9 API' },
+    { name: 'DeepSeek',        baseUrl: 'https://api.deepseek.com',                        model: 'deepseek-v4-flash', icon: '🔵', desc: '性价比高的通用模型' },
+    { name: 'Kimi (Moonshot)', baseUrl: 'https://api.moonshot.cn/v1',                         model: 'moonshot-v1-8k',  icon: '🟣', desc: '长上下文推理能力强' },
+    { name: 'Qwen (通义千问)', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-turbo',      icon: '🟠', desc: '阿里云通义千问大模型' },
+    { name: '自定义',            baseUrl: '',                                                model: '',                 icon: '⚙️', desc: '接入任意 OpenAI 兼容 API，可配置多个' },
   ];
+  const PRESET_NAMES = ['DeepSeek', 'Kimi (Moonshot)', 'Qwen (通义千问)'];
+
+  const state = {
+    step: 1,
+    card: null,
+    presets: [],
+    customs: [],
+    activeProvider: null,
+    activeChoice: null,
+    enableCache: true,
+    presetApiKey: '',
+    presetModel: '',
+    seq: 1,
+    saving: false,
+    autoTesting: false,
+    batchFailures: [],
+    pendingTests: [],
+  };
 
   const $ = id => document.getElementById(id);
+  const EYE_OFF_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>';
+  const EYE_ON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>';
 
-  function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  var toastTimer = null;
+  function showToast(msg) {
+    var el = $('toast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'toast';
+      el.className = 'toast';
+      document.body.appendChild(el);
+    }
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function() { el.classList.remove('show'); }, 2500);
+  }
 
-  // Build cards
-  const container = $('provider-cards');
-  function buildCards() {
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function escAttr(s) { return esc(s).replace(/'/g, '&#39;'); }
+
+  function findPreset(name) {
+    for (var i = 0; i < state.presets.length; i++) {
+      if (state.presets[i].name === name) return state.presets[i];
+    }
+    return null;
+  }
+  function findCustom(id) {
+    for (var i = 0; i < state.customs.length; i++) {
+      if (state.customs[i].id === id) return state.customs[i];
+    }
+    return null;
+  }
+  function countCustomConfigured() {
+    var n = 0;
+    for (var i = 0; i < state.customs.length; i++) {
+      var c = state.customs[i];
+      if (c.hasKey || c.apiKey) n++;
+    }
+    return n;
+  }
+
+  function presetBadgeHtml(p) {
+    if (p.isActive) return '<span class="card-badge active">当前使用</span>';
+    if (p.hasKey) return '<span class="card-badge configured">已配置</span>';
+    return '';
+  }
+
+  function renderCards() {
+    var container = $('provider-cards');
     container.innerHTML = '';
-    PRESETS.forEach(function(p, i) {
+    PRESETS.forEach(function(p) {
       var card = document.createElement('div');
-      card.className = 'provider-card' + (i === 0 ? ' selected' : '');
+      card.className = 'provider-card' + (state.card === p.name ? ' selected' : '');
       card.dataset.name = p.name;
-      card.innerHTML = '<div class="card-icon">' + p.icon + '</div><div class="card-name">' + esc(p.name) + '</div><div class="card-desc">' + esc(p.desc) + '</div>';
-      card.addEventListener('click', function() { selectProvider(p.name); });
+      var badge = '';
+      if (p.name === '自定义') {
+        var activeCustom = null;
+        for (var i = 0; i < state.customs.length; i++) if (state.customs[i].isActive) activeCustom = state.customs[i];
+        var n = countCustomConfigured();
+        if (activeCustom) badge = '<span class="card-badge active">当前使用</span>';
+        else if (n > 0) badge = '<span class="card-badge configured">' + n + ' 个已配置</span>';
+      } else {
+        var preset = findPreset(p.name);
+        if (preset) badge = presetBadgeHtml(preset);
+      }
+      var actBtn = '';
+      if (p.name !== '自定义') {
+        var presetObj = findPreset(p.name);
+        actBtn = presetObj && presetObj.isActive
+          ? '<button class="card-active-btn active" type="button">✓ 当前使用</button>'
+          : '<button class="card-active-btn" type="button">设为当前使用</button>';
+      }
+      card.innerHTML = '<div class="card-icon">' + p.icon + '</div><div class="card-name">' + esc(p.name) + '</div><div class="card-desc">' + esc(p.desc) + '</div>' + badge + actBtn;
+      var actBtnEl = card.querySelector('.card-active-btn');
+      if (actBtnEl) {
+        actBtnEl.addEventListener('click', function(e) {
+          e.stopPropagation();
+          markActive(p.name);
+        });
+      }
+      card.addEventListener('click', function() { selectCard(p.name); });
       container.appendChild(card);
     });
   }
-  buildCards();
 
-  function selectProvider(name) {
-    state.selectedProvider = name;
-    state.isDirty = true;
+  function markActive(name) {
+    state.activeChoice = name;
+    state.presets.forEach(function(p) { p.isActive = p.name === name; });
+    state.customs.forEach(function(c) { c.isActive = c.name === name; });
+    renderCards();
+    updateSummary();
+  }
+
+  function selectCard(name) {
+    if (state.autoTesting) return;
+    state.card = name;
+    var isCustom = name === '自定义';
     document.querySelectorAll('.provider-card').forEach(function(c) {
       c.classList.toggle('selected', c.dataset.name === name);
     });
-    var preset = PRESETS.find(function(p) { return p.name === name; });
-    state.baseUrl = preset ? preset.baseUrl : '';
-    state.model = preset ? preset.model : '';
-    if (state.existingProviderName === name && state.existingApiKey) {
-      state.apiKey = state.existingApiKey;
-    } else if (state.existingProviderName !== name) {
-      state.apiKey = '';
-    }
-    updateForm();
-  }
-
-  function updateForm() {
-    var isCustom = state.selectedProvider === '\\u81ea\\u5b9a\\u4e49';
-    $('url-field').style.display = isCustom ? 'block' : 'none';
-    $('url-display').style.display = isCustom ? 'none' : 'block';
-    $('url-display-input').value = state.baseUrl;
-    $('model-input').value = state.model;
-    $('api-key-input').value = state.apiKey;
+    $('preset-form').style.display = isCustom ? 'none' : 'block';
+    $('custom-section').style.display = isCustom ? 'block' : 'none';
     if (isCustom) {
-      $('model-hint').textContent = '(\\u5fc5\\u586b)';
-    } else if (state.model) {
-      $('model-hint').textContent = '(\\u4f7f\\u7528\\u9ed8\\u8ba4\\u503c\\uff0c\\u53ef\\u4fee\\u6539)';
+      renderCustomEntries();
+    } else {
+      fillPresetForm(name);
     }
   }
 
-  $('api-key-input').addEventListener('input', function() { state.apiKey = this.value; state.isDirty = true; $('key-error').style.display = 'none'; });
-  $('model-input').addEventListener('input', function() { state.model = this.value; });
-  $('url-input').addEventListener('input', function() { state.baseUrl = this.value; });
-  $('paste-btn').addEventListener('click', function() {
-    navigator.clipboard.readText().then(function(text) {
-      $('api-key-input').value = text; state.apiKey = text; state.isDirty = true; $('key-error').style.display = 'none';
-    }).catch(function() {});
+  function fillPresetForm(name) {
+    var p = findPreset(name);
+    if (!p) return;
+    state.presetApiKey = '';
+    state.presetModel = p.model;
+    var keyInput = $('api-key-input');
+    keyInput.value = '';
+    keyInput.type = 'password';
+    keyInput.placeholder = p.hasKey ? MASK : 'sk-...';
+    $('toggle-key-btn').innerHTML = EYE_ON_SVG;
+    $('toggle-key-btn').title = '显示 API Key';
+    $('model-input').value = p.model;
+    $('url-display-input').value = p.baseUrl;
+    $('model-hint').textContent = p.model ? '(使用默认值，可修改)' : '';
+    $('key-hint').textContent = p.hasKey ? '(已配置，留空保持不变)' : '';
+    $('key-error').style.display = 'none';
+    $('model-error').style.display = 'none';
+    $('preset-test-result').style.display = 'none';
+    $('preset-test-result').className = 'test-result';
+  }
+
+  $('api-key-input').addEventListener('input', function() {
+    state.presetApiKey = this.value;
+    $('key-error').style.display = 'none';
+  });
+  $('model-input').addEventListener('input', function() {
+    state.presetModel = this.value;
+    $('model-error').style.display = 'none';
+  });
+  $('toggle-key-btn').addEventListener('click', function() {
+    var input = $('api-key-input');
+    var show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    this.innerHTML = show ? EYE_OFF_SVG : EYE_ON_SVG;
+    this.title = show ? '隐藏 API Key' : '显示 API Key';
   });
 
-  var stepLines = { '1-2': $('line-1'), '2-3': $('line-2') };
+  function renderCustomEntries() {
+    var container = $('custom-entries');
+    container.innerHTML = '';
+    state.customs.forEach(function(c, idx) {
+      var el = document.createElement('div');
+      el.className = 'custom-entry' + (c.isActive ? ' active' : '');
+      var keyPlaceholder = c.hasKey ? 'placeholder="' + MASK + '"' : 'placeholder="sk-..."';
+      var keyHint = c.hasKey ? '<div class="field-hint">(已配置，留空保持不变)</div>' : '';
+      var resultHtml = '';
+      if (c.result) {
+        resultHtml = c.result.success
+          ? '<div class="test-result success">✅ 连接成功</div>'
+          : '<div class="test-result failure">❌ ' + esc(c.result.error || '连接失败') + '</div>';
+      } else if (c.testing) {
+        resultHtml = '<span class="spinner"></span><span style="color:var(--text-muted);font-size:12px">测试中...</span>';
+      }
+      el.innerHTML =
+        '<div class="entry-head">' +
+          '<div class="entry-title">' + esc(c.name || ('自定义提供商 ' + (idx + 1))) + '</div>' +
+          '<label class="entry-active-label"><input type="radio" name="custom-active" data-idx="' + idx + '"' + (c.isActive ? ' checked' : '') + ' />设为当前使用</label>' +
+          '<button class="entry-remove" data-idx="' + idx + '">删除</button>' +
+        '</div>' +
+        '<div class="entry-grid">' +
+          '<div class="field"><label>名称 <span class="required">*</span></label><input type="text" class="ce-name" data-idx="' + idx + '" value="' + escAttr(c.name) + '" placeholder="MyAI" /></div>' +
+          '<div class="field"><label>Base URL <span class="required">*</span></label><input type="text" class="ce-url" data-idx="' + idx + '" value="' + escAttr(c.baseUrl) + '" placeholder="https://api.example.com/v1" /></div>' +
+          '<div class="field full"><label>Model <span class="required">*</span></label><input type="text" class="ce-model" data-idx="' + idx + '" value="' + escAttr(c.model) + '" placeholder="model-name" /></div>' +
+          '<div class="field full"><label>API Key</label><div class="input-with-button">' +
+            '<input type="password" class="ce-key" data-idx="' + idx + '" ' + keyPlaceholder + ' autocomplete="off" />' +
+            '<button type="button" class="icon-btn ce-eye" data-idx="' + idx + '" title="显示 API Key">' + EYE_ON_SVG + '</button>' +
+          '</div>' + keyHint + '</div>' +
+        '</div>' +
+        '<div class="test-row"><button class="test-btn ce-test" data-idx="' + idx + '">测试连接</button>' + resultHtml + '</div>';
+      container.appendChild(el);
+    });
+  }
+
+  $('custom-entries').addEventListener('input', function(e) {
+    var t = e.target;
+    var idx = t.dataset ? t.dataset.idx : undefined;
+    if (idx === undefined) return;
+    var c = state.customs[+idx];
+    if (!c) return;
+    if (t.classList.contains('ce-name')) {
+      c.name = t.value;
+      var titles = $('custom-entries').querySelectorAll('.entry-title');
+      if (titles[+idx]) titles[+idx].textContent = t.value || ('自定义提供商 ' + (+idx + 1));
+    } else if (t.classList.contains('ce-url')) {
+      c.baseUrl = t.value;
+    } else if (t.classList.contains('ce-model')) {
+      c.model = t.value;
+    } else if (t.classList.contains('ce-key')) {
+      c.apiKey = t.value === MASK ? '' : t.value;
+    }
+    renderCards();
+  });
+
+  $('custom-entries').addEventListener('click', function(e) {
+    var t = e.target;
+    var idx = t.dataset ? t.dataset.idx : undefined;
+    if (idx === undefined) return;
+    var c = state.customs[+idx];
+    if (!c) return;
+    if (t.classList.contains('ce-eye')) {
+      var wrap = t.parentElement;
+      var input = wrap.querySelector('.ce-key');
+      var show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      t.innerHTML = show ? EYE_OFF_SVG : EYE_ON_SVG;
+      t.title = show ? '隐藏 API Key' : '显示 API Key';
+    } else if (t.classList.contains('entry-remove')) {
+      if (state.autoTesting) return;
+      var wasActive = c.isActive;
+      state.customs.splice(+idx, 1);
+      if (wasActive) {
+        if (state.customs.length > 0) {
+          state.customs[0].isActive = true;
+          state.activeChoice = state.customs[0].name || null;
+          state.presets.forEach(function(p) { p.isActive = false; });
+        } else {
+          state.activeChoice = null;
+        }
+      }
+      renderCustomEntries();
+      renderCards();
+    } else if (t.classList.contains('ce-test')) {
+      runCustomTest(+idx);
+    }
+  });
+
+  $('custom-entries').addEventListener('change', function(e) {
+    var t = e.target;
+    if (t.name !== 'custom-active') return;
+    var idx = +t.dataset.idx;
+    state.customs.forEach(function(x, i) { x.isActive = (i === idx); });
+    state.presets.forEach(function(p) { p.isActive = false; });
+    state.activeChoice = state.customs[idx] ? state.customs[idx].name : null;
+    document.querySelectorAll('.custom-entry').forEach(function(el, i) {
+      el.classList.toggle('active', i === idx);
+    });
+    renderCards();
+    updateSummary();
+  });
+
+  $('add-entry-btn').addEventListener('click', function() {
+    if (state.autoTesting) return;
+    state.customs.push({
+      id: 'c' + (state.seq++),
+      name: '',
+      originalName: '',
+      baseUrl: '',
+      model: '',
+      apiKey: '',
+      hasKey: false,
+      isActive: state.customs.length === 0,
+      testing: false,
+      result: null,
+    });
+    renderCustomEntries();
+    renderCards();
+  });
+
+  function runCustomTest(idx) {
+    if (state.autoTesting) return;
+    var c = state.customs[idx];
+    if (!c) return;
+    if (!c.baseUrl.trim()) { c.result = { success: false, error: '请先填写 Base URL' }; renderCustomEntries(); return; }
+    if (!c.model.trim()) { c.result = { success: false, error: '请先填写 Model' }; renderCustomEntries(); return; }
+    c.testing = true;
+    c.result = null;
+    renderCustomEntries();
+    vscode.postMessage({ type: 'testConnection', data: {
+      id: c.id,
+      name: c.name.trim(),
+      baseUrl: c.baseUrl.trim(),
+      model: c.model.trim(),
+      apiKey: c.apiKey,
+    } });
+  }
+
+  $('preset-test-btn').addEventListener('click', function() {
+    if (state.autoTesting) return;
+    var p = findPreset(state.card);
+    if (!p) return;
+    var btn = $('preset-test-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>测试中...';
+    $('preset-test-result').className = 'test-result';
+    $('preset-test-result').style.display = 'none';
+    vscode.postMessage({ type: 'testConnection', data: {
+      id: 'preset',
+      name: state.card,
+      baseUrl: p.baseUrl,
+      model: state.presetModel.trim(),
+      apiKey: state.presetApiKey,
+    } });
+  });
+
+  function showPresetTestResult(success, error) {
+    var btn = $('preset-test-btn');
+    btn.disabled = false;
+    btn.innerHTML = '测试连接';
+    var el = $('preset-test-result');
+    if (success) {
+      el.className = 'test-result success';
+      el.innerHTML = '✅ 连接成功！API Key 有效';
+    } else {
+      el.className = 'test-result failure';
+      el.innerHTML = '❌ 连接失败<div class="test-detail">' + esc(error || '未知错误') + '</div>';
+    }
+    el.style.display = 'block';
+  }
+
+  function validate() {
+    $('key-error').style.display = 'none';
+    $('model-error').style.display = 'none';
+    if (state.card === '自定义') {
+      if (state.customs.length === 0) { showToast('请至少添加一个自定义提供商'); return false; }
+      var seen = {};
+      for (var i = 0; i < state.customs.length; i++) {
+        var c = state.customs[i];
+        var n = c.name.trim();
+        if (!n) { showToast('第 ' + (i + 1) + ' 个自定义提供商缺少名称'); return false; }
+        if (seen[n.toLowerCase()]) { showToast('提供商名称重复: ' + n); return false; }
+        seen[n.toLowerCase()] = true;
+        if (PRESET_NAMES.indexOf(n) >= 0) { showToast('名称与预置提供商重复: ' + n); return false; }
+        if (!c.baseUrl.trim()) { showToast(n + ': 缺少 Base URL'); return false; }
+        try { new URL(c.baseUrl.trim()); } catch (e) { showToast(n + ': Base URL 格式无效'); return false; }
+        if (!c.model.trim()) { showToast(n + ': 缺少 Model'); return false; }
+        if (!c.apiKey.trim() && !c.hasKey) { showToast('请为 ' + n + ' 填写 API Key'); return false; }
+      }
+      var hasActive = false;
+      for (var j = 0; j < state.customs.length; j++) if (state.customs[j].isActive) hasActive = true;
+      if (!hasActive) state.customs[0].isActive = true;
+      return true;
+    }
+    var p = findPreset(state.card);
+    if (!state.presetApiKey.trim() && !(p && p.hasKey)) {
+      $('key-error').style.display = 'block';
+      $('api-key-input').focus();
+      showToast('请填入 API Key');
+      return false;
+    }
+    if (!state.presetModel.trim()) {
+      $('model-error').style.display = 'block';
+      $('model-input').focus();
+      showToast('请填入 Model');
+      return false;
+    }
+    return true;
+  }
+
   function goToStep(n) {
     state.step = n;
-    document.querySelectorAll('.step-content').forEach(function(el) { el.classList.toggle('active', el.id === 'step-' + n); });
-    for (var i = 1; i <= 3; i++) {
+    document.querySelectorAll('.step-content').forEach(function(el) {
+      el.classList.toggle('active', el.id === 'step-' + n);
+    });
+    for (var i = 1; i <= 2; i++) {
       var dot = $('dot-' + i), label = $('label-' + i);
       dot.className = 'step-dot' + (i === n ? ' active' : i < n ? ' done' : '');
       label.className = 'step-label' + (i === n ? ' active' : '');
-      var line = i < 3 ? $('line-' + i) : null;
+      var line = i < 2 ? $('line-' + i) : null;
       if (line) line.className = 'step-line' + (i < n ? ' done' : '');
     }
     $('prev-btn').style.display = n === 1 ? 'none' : 'inline-block';
     var nb = $('next-btn');
-    if (n === 3) { nb.textContent = '\\u5b8c\\u6210\\u914d\\u7f6e'; nb.style.display = 'inline-block'; }
-    else if (n === 2) { nb.style.display = 'none'; }
-    else { nb.textContent = '\\u4e0b\\u4e00\\u6b65 \\u2192'; nb.style.display = 'inline-block'; }
+    if (n === 2) nb.textContent = '完成配置';
+    else nb.textContent = '下一步 →';
   }
 
-  $('prev-btn').addEventListener('click', function() { if (state.step > 1) goToStep(state.step - 1); });
+  $('prev-btn').addEventListener('click', function() {
+    if (state.step > 1 && !state.autoTesting) goToStep(state.step - 1);
+  });
 
   $('next-btn').addEventListener('click', function() {
+    if (state.saving || state.autoTesting) return;
     if (state.step === 1) {
-      if (!state.selectedProvider) return;
-      if (!state.apiKey.trim()) { $('key-error').style.display = 'block'; return; }
-      if (state.selectedProvider === '\\u81ea\\u5b9a\\u4e49' && !state.baseUrl.trim()) { $('url-error').style.display = 'block'; return; }
-      $('key-error').style.display = 'none'; $('url-error').style.display = 'none';
-      updateSummary();
-      goToStep(2);
-      runTest();
-    } else if (state.step === 2) {
-      goToStep(3);
-    } else if (state.step === 3) {
-      var saveBtn = $('next-btn'); saveBtn.disabled = true; saveBtn.textContent = '\\u4fdd\\u5b58\\u4e2d...';
-      vscode.postMessage({ type: 'save', data: {
-        provider: { name: state.selectedProvider, baseUrl: state.baseUrl, model: state.model },
-        apiKey: state.apiKey, autoAnalyze: state.autoAnalyze, enableCache: state.enableCache
-      }});
+      if (!validate()) return;
+      runAllTestsAndProceed();
+    } else {
+      save();
     }
   });
 
-  $('skip-link').addEventListener('click', function() { goToStep(3); });
-
-  function runTest() {
-    $('test-btn').disabled = true;
-    $('test-btn').innerHTML = '<span class="spinner"></span>\\u6d4b\\u8bd5\\u4e2d...';
-    $('test-btn').className = 'btn btn-primary btn-testing';
-    $('test-result').className = 'test-result';
-    $('test-result').style.display = 'none';
-    vscode.postMessage({ type: 'testConnection', data: { baseUrl: state.baseUrl, model: state.model, apiKey: state.apiKey } });
+  function runAllTestsAndProceed() {
+    state.autoTesting = true;
+    state.batchFailures = [];
+    var nb = $('next-btn');
+    nb.disabled = true;
+    nb.textContent = '测试中...';
+    if (state.card === '自定义') {
+      state.pendingTests = [];
+      for (var i = 0; i < state.customs.length; i++) state.pendingTests.push(i);
+      runNextCustomTest();
+    } else {
+      var p = findPreset(state.card);
+      vscode.postMessage({ type: 'testConnection', data: {
+        id: 'preset',
+        name: state.card,
+        baseUrl: p.baseUrl,
+        model: state.presetModel.trim(),
+        apiKey: state.presetApiKey,
+      } });
+    }
   }
 
-  $('test-btn').addEventListener('click', runTest);
+  function runNextCustomTest() {
+    if (state.pendingTests.length === 0) {
+      finishBatchTest();
+      return;
+    }
+    var idx = state.pendingTests.shift();
+    var c = state.customs[idx];
+    if (!c) { runNextCustomTest(); return; }
+    c.testing = true;
+    c.result = null;
+    renderCustomEntries();
+    vscode.postMessage({ type: 'testConnection', data: {
+      id: c.id,
+      name: c.name.trim(),
+      baseUrl: c.baseUrl.trim(),
+      model: c.model.trim(),
+      apiKey: c.apiKey,
+    } });
+  }
+
+  function finishBatchTest() {
+    state.autoTesting = false;
+    var nb = $('next-btn');
+    nb.disabled = false;
+    nb.textContent = '下一步 →';
+    if (state.batchFailures.length > 0) {
+      showToast('有 ' + state.batchFailures.length + ' 个连接测试未通过，请检查后重试');
+    } else {
+      updateSummary();
+      goToStep(2);
+    }
+  }
+
+  function finishPresetAutoTest(success) {
+    state.autoTesting = false;
+    var nb = $('next-btn');
+    nb.disabled = false;
+    nb.textContent = '下一步 →';
+    if (!success) {
+      showToast('连接测试未通过，请检查后重试');
+    } else {
+      updateSummary();
+      goToStep(2);
+    }
+  }
+
+  function updateSummary() {
+    var activeName = null;
+    var activeIcon = '';
+    for (var i = 0; i < state.presets.length; i++) {
+      if (state.presets[i].isActive) {
+        activeName = state.presets[i].name;
+        activeIcon = PRESETS[i].icon;
+      }
+    }
+    for (var j = 0; j < state.customs.length; j++) {
+      if (state.customs[j].isActive) {
+        activeName = state.customs[j].name || '自定义';
+        activeIcon = '⚙️';
+      }
+    }
+    var n = countCustomConfigured();
+    $('summary-content').innerHTML =
+      '<div class="summary-row"><span class="summary-key">激活提供商</span><span class="summary-val">' + esc(activeIcon ? activeIcon + ' ' + activeName : (activeName || '(未设置)')) + '</span></div>' +
+      '<div class="summary-row"><span class="summary-key">自定义提供商</span><span class="summary-val">' + n + ' 个已配置</span></div>' +
+      '<div class="summary-row"><span class="summary-key">保存历史</span><span class="summary-val ' + (state.enableCache ? 'yes' : 'no') + '">' + (state.enableCache ? '✓ 已开启' : '✗ 已关闭') + '</span></div>';
+  }
+
+  function save() {
+    state.saving = true;
+    var nb = $('next-btn');
+    nb.disabled = true;
+    nb.textContent = '保存中...';
+    if (state.card === '自定义') {
+      var activeEntry = null;
+      for (var i = 0; i < state.customs.length; i++) if (state.customs[i].isActive) activeEntry = state.customs[i];
+      if (!activeEntry) activeEntry = state.customs[0];
+      var providers = state.customs.map(function(c) {
+        return {
+          name: c.name.trim(),
+          baseUrl: c.baseUrl.trim(),
+          model: c.model.trim(),
+          apiKey: c.apiKey.trim() || null,
+          originalName: c.originalName || '',
+        };
+      });
+      vscode.postMessage({ type: 'save', data: {
+        kind: 'custom',
+        providers: providers,
+        activeProvider: activeEntry.name.trim(),
+        enableCache: state.enableCache,
+      } });
+    } else {
+      var p = findPreset(state.card);
+      vscode.postMessage({ type: 'save', data: {
+        kind: 'preset',
+        provider: { name: state.card, baseUrl: p.baseUrl, model: state.presetModel.trim() },
+        apiKey: state.presetApiKey.trim() || null,
+        activeProvider: state.activeChoice || state.card,
+        enableCache: state.enableCache,
+      } });
+    }
+  }
 
   document.querySelectorAll('.toggle').forEach(function(el) {
     el.addEventListener('click', function() {
@@ -501,72 +947,105 @@ h2{font-size:16px;margin-bottom:16px;color:var(--text-bright)}
     });
   });
 
-  function updateSummary() {
-    var preset = PRESETS.find(function(p) { return p.name === state.selectedProvider; });
-    var label = preset && preset.icon ? preset.icon + ' ' + state.selectedProvider : state.selectedProvider;
-    $('summary-content').innerHTML =
-      '<div class="summary-row"><span class="summary-key">\\u63d0\\u4f9b\\u5546</span><span class="summary-val">' + esc(label) + '</span></div>' +
-      '<div class="summary-row"><span class="summary-key">\\u6a21\\u578b</span><span class="summary-val">' + esc(state.model || '(\\u672a\\u8bbe\\u7f6e)') + '</span></div>' +
-      '<div class="summary-row"><span class="summary-key">\\u81ea\\u52a8\\u5206\\u6790</span><span class="summary-val ' + (state.autoAnalyze ? 'yes' : 'no') + '">' + (state.autoAnalyze ? '\\u2713 \\u5df2\\u5f00\\u542f' : '\\u2717 \\u5df2\\u5173\\u95ed') + '</span></div>' +
-      '<div class="summary-row"><span class="summary-key">\\u7f13\\u5b58</span><span class="summary-val ' + (state.enableCache ? 'yes' : 'no') + '">' + (state.enableCache ? '\\u2713 \\u5df2\\u5f00\\u542f' : '\\u2717 \\u5df2\\u5173\\u95ed') + '</span></div>';
-  }
-
   window.addEventListener('message', function(event) {
     var msg = event.data;
     switch (msg.type) {
       case 'init':
         var d = msg.data;
-        if (d.activeProvider) {
-          state.existingProviderName = d.activeProvider;
-          var existingPreset = PRESETS.find(function(p) { return p.name === d.activeProvider; });
-          if (existingPreset) {
-            state.selectedProvider = d.activeProvider;
-            state.baseUrl = existingPreset.baseUrl;
-            state.model = existingPreset.model;
-          } else {
-            var ep = (d.providers || []).find(function(p) { return p.name === d.activeProvider; });
-            if (ep) { state.selectedProvider = '\\u81ea\\u5b9a\\u4e49'; state.baseUrl = ep.baseUrl; state.model = ep.model; }
+        state.activeProvider = d.activeProvider || null;
+        state.activeChoice = state.activeProvider;
+        state.enableCache = d.enableCache !== undefined ? d.enableCache : true;
+        var providers = d.providers || [];
+        PRESETS.forEach(function(p) {
+          if (p.name === '自定义') return;
+          var found = null;
+          for (var i = 0; i < providers.length; i++) {
+            if (providers[i].name === p.name) { found = providers[i]; break; }
           }
-          state.existingApiKey = d.apiKey || '';
-          state.apiKey = state.existingApiKey ? '\\u25cf\\u25cf\\u25cf\\u25cf\\u25cf\\u25cf\\u25cf\\u25cf' : '';
+          state.presets.push({
+            name: p.name,
+            baseUrl: found ? (found.baseUrl || p.baseUrl) : p.baseUrl,
+            model: found ? (found.model || p.model) : p.model,
+            hasKey: !!(found && found.hasApiKey),
+            isActive: !!(found && found.name === state.activeProvider),
+          });
+        });
+        state.customs = [];
+        providers.forEach(function(pr) {
+          if (PRESET_NAMES.indexOf(pr.name) >= 0) return;
+          state.customs.push({
+            id: 'c' + (state.seq++),
+            name: pr.name,
+            originalName: pr.name,
+            baseUrl: pr.baseUrl,
+            model: pr.model,
+            apiKey: '',
+            hasKey: !!pr.hasApiKey,
+            isActive: pr.name === state.activeProvider,
+            testing: false,
+            result: null,
+          });
+        });
+        if (state.customs.length === 0) {
+          state.customs.push({
+            id: 'c' + (state.seq++),
+            name: '',
+            originalName: '',
+            baseUrl: '',
+            model: '',
+            apiKey: '',
+            hasKey: false,
+            isActive: false,
+            testing: false,
+            result: null,
+          });
         }
-        if (d.autoAnalyze !== undefined) state.autoAnalyze = d.autoAnalyze;
-        if (d.enableCache !== undefined) state.enableCache = d.enableCache;
-        if (state.selectedProvider) {
-          document.querySelectorAll('.provider-card').forEach(function(c) { c.classList.toggle('selected', c.dataset.name === state.selectedProvider); });
-          updateForm();
+        var selected = null;
+        var hasRealCustom = false;
+        for (var rc = 0; rc < state.customs.length; rc++) {
+          if (state.customs[rc].name) { hasRealCustom = true; break; }
         }
-        $('toggle-autoAnalyze').classList.toggle('on', state.autoAnalyze);
+        if (state.activeProvider && PRESET_NAMES.indexOf(state.activeProvider) >= 0) {
+          selected = state.activeProvider;
+        } else if (state.activeProvider) {
+          selected = '自定义';
+        } else {
+          selected = hasRealCustom ? '自定义' : state.presets[0].name;
+        }
+        renderCards();
+        selectCard(selected);
         $('toggle-enableCache').classList.toggle('on', state.enableCache);
         updateSummary();
         break;
       case 'testResult':
-        $('test-btn').disabled = false;
-        $('test-btn').innerHTML = '\\u6d4b\\u8bd5\\u8fde\\u63a5';
-        $('test-btn').className = 'btn btn-primary';
-        var r = $('test-result');
-        if (msg.data.success) {
-          state.testPassed = true;
-          r.className = 'test-result success';
-          r.innerHTML = '\\u2705 \\u8fde\\u63a5\\u6210\\u529f\\uff01API Key \\u6709\\u6548';
-          r.style.display = 'block';
-          goToStep(3);
+        if (msg.data.id === 'preset') {
+          showPresetTestResult(msg.data.success, msg.data.error);
+          if (state.autoTesting) finishPresetAutoTest(msg.data.success);
         } else {
-          state.testPassed = false;
-          r.className = 'test-result failure';
-          r.innerHTML = '\\u274c \\u8fde\\u63a5\\u5931\\u8d25<div class="test-detail">' + esc(msg.data.error || '\\u672a\\u77e5\\u9519\\u8bef') + '</div>';
-          r.style.display = 'block';
+          var c = findCustom(msg.data.id);
+          if (c) {
+            c.testing = false;
+            c.result = { success: msg.data.success, error: msg.data.error };
+            renderCustomEntries();
+            if (state.autoTesting) {
+              if (!msg.data.success) state.batchFailures.push(c.name || '未命名提供商');
+              runNextCustomTest();
+            }
+          }
         }
         break;
       case 'saved':
-        var sb = $('next-btn'); sb.disabled = false; sb.textContent = '\\u2705 \\u5df2\\u4fdd\\u5b58';
+        var sb = $('next-btn');
+        sb.disabled = false;
+        sb.textContent = '✅ 已保存';
         setTimeout(function() { vscode.postMessage({ type: 'close' }); }, 800);
         break;
       case 'saveError':
-        $('next-btn').disabled = false;
-        $('next-btn').textContent = '\\u5b8c\\u6210\\u914d\\u7f6e';
-        var se = $('summary-card');
-        se.innerHTML += '<div style="color:var(--error);margin-top:8px;font-size:12px">' + esc(msg.data.error) + '</div>';
+        var seBtn = $('next-btn');
+        seBtn.disabled = false;
+        seBtn.textContent = '完成配置';
+        state.saving = false;
+        $('summary-card').innerHTML += '<div style="color:var(--error);margin-top:8px;font-size:12px">' + esc(msg.data.error) + '</div>';
         break;
     }
   });

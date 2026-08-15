@@ -143,7 +143,8 @@ export class ConfigManager {
     await Config.getInstance().saveProviderConfig(
       { name, baseUrl, model },
       finalKey,
-      { autoAnalyze: Config.getInstance().getAutoAnalyze(), enableCache: Config.getInstance().getEnableCache() },
+      { enableCache: Config.getInstance().getEnableCache() },
+      name,
     );
 
     vscode.window.showInformationMessage(`✅ 已配置提供商: ${name} (${model})`);
@@ -190,14 +191,12 @@ export class ConfigManager {
     this.outputChannel.appendLine('');
 
     const activeProvider   = cfg.get<string>('activeProvider', '无');
-    const autoAnalyze      = cfg.get<boolean>('autoAnalyze', true);
     const enableCache      = cfg.get<boolean>('enableCache', true);
     const aiTimeout        = cfg.get<number>('aiTimeout', 15000);
     const providers        = cfg.get<any[]>('providers', []);
 
     const output: Record<string, any> = {
       activeProvider,
-      autoAnalyze,
       enableCache,
       aiTimeout,
       totalProviders: providers.length,

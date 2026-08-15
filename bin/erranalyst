@@ -105,13 +105,11 @@ function cmdConfigShow() {
   const raw = readSettings();
   const providers = raw['errAnalyst.providers'] || [];
   const activeProvider = raw['errAnalyst.activeProvider'] || '(none)';
-  const autoAnalyze = raw['errAnalyst.autoAnalyze'] !== false;
   const enableCache = raw['errAnalyst.enableCache'] !== false;
   const aiTimeout = raw['errAnalyst.aiTimeout'] || 15000;
 
   const output = {
     activeProvider,
-    autoAnalyze,
     enableCache,
     aiTimeout,
     totalProviders: providers.length,

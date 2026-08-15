@@ -173,8 +173,7 @@ erranalyst help
 | --- | --- | --- |
 | `errAnalyst.providers` | 三个预设 | AI 提供商列表（Base URL / Model / API Key） |
 | `errAnalyst.activeProvider` | `DeepSeek` | 当前使用的提供商 |
-| `errAnalyst.autoAnalyze` | `true` | 捕获报错后自动调用 AI 分析 |
-| `errAnalyst.enableCache` | `true` | 启用错误分析本地缓存 |
+| `errAnalyst.enableCache` | `true` | 保存错误历史（仅作历史查阅，不参与自动分析） |
 | `errAnalyst.aiTimeout` | `15000` | AI 请求超时（毫秒） |
 | `errAnalyst.enableOneClickFix` | `true` | 启用一键修复功能 |
 | `errAnalyst.enableChat` | `true` | 启用错误分析对话 |
