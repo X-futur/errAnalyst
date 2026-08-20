@@ -34,8 +34,5 @@ Thumbs.db
 coverage/
 .nyc_output/
 
-# 开发文档
-docs/
-
 # 打包文件
 *.vsix
