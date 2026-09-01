@@ -374,6 +374,7 @@ export class Config {
       const creds = this.readCredentialsFile();
       creds[name] = apiKey;
       fs.writeFileSync(credFile, JSON.stringify(creds, null, 2));
+      console.log("[errAnalyst] ✅ 密钥配置持久化保存成功");
     } catch (e) {
       console.error('ErrAnalyst: Failed to write credentials file for CLI:', e);
     }
