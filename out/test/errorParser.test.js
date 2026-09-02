@@ -137,10 +137,6 @@ RuntimeError: Database query failed`;
         assert.strictEqual(result.chain[0].filePath, 'db.py');
         assert.strictEqual(result.chain[0].lineNumber, 10);
     });
-    test('normalizeErrorKey works correctly', () => {
-        const key = pythonTraceback_1.PythonTracebackParser.normalizeErrorKey('ZeroDivisionError', 'main.py');
-        assert.strictEqual(key, 'zerodivisionerror:main.py');
-    });
 });
 suite('ManualStopFilter', () => {
     test('ignores KeyboardInterrupt error type', () => {

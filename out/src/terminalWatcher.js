@@ -70,6 +70,7 @@ function isKeyboardInterruptError(parseResult) {
 }
 class TerminalWatcher {
     constructor(onErrorDetected, onOccurrence) {
+        // disposables 用于存储所有注册的事件监听器，方便在 deactivate（扩展注销） 时统一释放资源
         this.disposables = [];
         this.streamStates = new Map();
         /** 分档冷却：`结构化key` 或 `log::内容` -> 最近一次分析时间。 */
@@ -86,10 +87,13 @@ class TerminalWatcher {
         // ── 触发 1: onDidEndTerminalShellExecution（命令结束） ──
         this.disposables.push(vscode.window.onDidEndTerminalShellExecution(async (event) => {
             const exitCode = event.exitCode;
-            console.log('TerminalWatcher: onDidEndTerminalShellExecution fire, exitCode=' + exitCode);
+            console.log('TerminalWatcher: 通道一onDidEndTerminalShellExecution fire, exitCode=' + exitCode);
+            // 退出码未定义/获取不到，直接跳过分析
             if (exitCode === undefined)
                 return;
+            // execution为本次命令执行时的上下文
             const execution = event.execution;
+            // 获取本次命令执行的完整命令文本 python script.py ...
             const commandLine = commandLineToString(execution.commandLine);
             // 若流式等待尚未触发，取消它，避免与服务崩溃的结束分析重复
             this.cancelPending(event.terminal);
@@ -98,6 +102,7 @@ class TerminalWatcher {
                 for await (const data of execution.read()) {
                     buffer += data;
                     if (buffer.length > MAX_BUFFER_SIZE) {
+                        // 防止内存溢出，只保留最末尾的 MAX_BUFFER_SIZE 字节，错误堆栈通常在末尾
                         buffer = buffer.slice(-MAX_BUFFER_SIZE);
                     }
                 }
@@ -118,8 +123,11 @@ class TerminalWatcher {
                 ? pythonTraceback_1.PythonTracebackParser.parse(traceback, workspaceFolders)
                 : null;
             if (parseResult) {
+                // 截取错误消息前 100 个字符，生成错误指纹，用于判定是否是同一个错误
                 const key = parseResult.errorType + '::' + parseResult.errorMessage.slice(0, 100);
                 const now = Date.now();
+                // 去重操作，防止runtime和command-end同时触发同一报错的分析，导致重复上报
+                // 去重要求：key相同，是同一个错误；时间窗口内，上次是runtime触发，本次是command-end触发
                 if (key === this.lastErrorKey &&
                     now - this.lastErrorTime < terminalStream_1.UPGRADE_WINDOW_MS &&
                     this.lastErrorTriggerSource === 'runtime') {
@@ -147,6 +155,8 @@ class TerminalWatcher {
                     return;
                 }
             }
+            // 错误码检测分支，若 exitCode !== 0，则认为是命令结束报错，触发结构化分析；
+            // 否则尝试补充分析，若缓冲中有 traceback，则触发结构化分析
             if (exitCode !== 0) {
                 this.checkForError(stripped, exitCode, commandLine);
             }
@@ -155,21 +165,26 @@ class TerminalWatcher {
             }
         }));
         // ── 触发 2: TerminalLinkProvider（稳定兜底数据通道） ──
+        // 创建终端监控器对象
         const linkProvider = new errorLinkProvider_1.ErrorLinkProvider_((line, terminal) => {
             this.appendData(terminal, line + '\n');
         });
         this.disposables.push(vscode.window.registerTerminalLinkProvider(linkProvider));
-        console.log('TerminalWatcher: linkProvider registered');
+        console.log('TerminalWatcher: 通道二linkProvider registered');
         // ── 触发 3: onDidWriteTerminalData（提案 API，完整数据通道） ──
         try {
             const win = vscode.window;
+            // 提案API onDidWriteTerminalData 可用时，使用它作为完整数据通道；不可用时，流式检测仍能拿到逐行输出
             if (typeof win.onDidWriteTerminalData === 'function') {
-                console.log('TerminalWatcher: onDidWriteTerminalData IS available');
+                console.log('TerminalWatcher: onDidWriteTerminalData IS available 终端捕获通道三可以使用');
                 this.disposables.push(win.onDidWriteTerminalData((event) => {
+                    // 提取数据
                     const data = event.data;
                     const terminal = event.terminal;
+                    // 无法关联到终端或数据非字符串时，直接跳过
                     if (!terminal || typeof data !== 'string')
                         return;
+                    // 将终端输出的数据加入缓冲区
                     this.appendData(terminal, data);
                 }));
             }
@@ -181,12 +196,16 @@ class TerminalWatcher {
             console.log('TerminalWatcher: onDidWriteTerminalData error:', e.message);
         }
         // ── 触发 4: onDidStartTerminalShellExecution（清空缓冲 + 记录命令） ──
-        this.disposables.push(vscode.window.onDidStartTerminalShellExecution((event) => {
+        this.disposables.push(
+        // 终端shell命令开始执行时触发 onDidStartTerminalShellExecution 事件，清空缓冲区并记录命令行
+        vscode.window.onDidStartTerminalShellExecution((event) => {
+            // 获取终端状态
             const state = this.getState(event.terminal);
+            // 取消该终端之前未完成的任务，新的命令开始执行时，之前的流式分析任务不再需要
             this.cancelPending(event.terminal);
             state.buffer = '';
             state.commandLine = commandLineToString(event.execution.commandLine);
-            console.log('TerminalWatcher: cleared stream buffer for', event.terminal.name);
+            console.log('TerminalWatcher: 通道四cleared stream buffer for', event.terminal.name);
         }));
     }
     deactivate() {
